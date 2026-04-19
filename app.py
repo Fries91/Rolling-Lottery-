@@ -34,47 +34,19 @@ from db import (
     set_round_status,
 )
 
-
-# ============================================================
-# APP SETUP
-# ============================================================
-
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "change-me-in-render")
 
 if CORS is not None:
-    CORS(
-        app,
-        supports_credentials=True,
-        resources={r"/api/*": {"origins": "*"}},
-    )
+    CORS(app, supports_credentials=True, resources={r"/api/*": {"origins": "*"}})
 
 init_db()
 
-
-# ============================================================
-# ENV / CONFIG
-# ============================================================
-
 ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "3679030"))
 ADMIN_USER_NAME = os.environ.get("ADMIN_USER_NAME", "Fries91")
-
-# Set this to your faction id in Render env when ready.
-DEFAULT_FACTION_ID = int(os.environ.get("FACTION_ID", "0"))
-
-# Verification mode:
-# manual = lets verify-payment succeed without real Torn payment log checking
-# torn   = reserved hook for later real Torn payment verification
-LOTTERY_VERIFY_MODE = os.environ.get("LOTTERY_VERIFY_MODE", "manual").strip().lower()
-
-# Optional background watcher:
-ENABLE_DRAW_WATCHER = os.environ.get("ENABLE_DRAW_WATCHER", "0") == "1"
+ENABLE_DRAW_WATCHER = os.environ.get("ENABLE_DRAW_WATCHER", "1") == "1"
 DRAW_WATCHER_INTERVAL = int(os.environ.get("DRAW_WATCHER_INTERVAL", "30"))
 
-
-# ============================================================
-# HELPERS
-# ============================================================
 
 def ok(payload: dict[str, Any] | None = None, status: int = 200):
     body = {"ok": True}
@@ -114,15 +86,6 @@ def get_session_user() -> dict[str, Any] | None:
 
 
 def get_request_user() -> dict[str, Any] | None:
-    """
-    Supports either Flask session login or headers for easy userscript testing.
-
-    Accepted headers:
-      X-User-Id
-      X-User-Name
-      X-Faction-Id
-      X-Is-Admin   (1/0)
-    """
     sess_user = get_session_user()
     if sess_user:
         return sess_user
@@ -132,16 +95,12 @@ def get_request_user() -> dict[str, Any] | None:
         return None
 
     user_id = clamp_int(header_user_id, 0)
-    user_name = (request.headers.get("X-User-Name") or "").strip()
-    faction_id = clamp_int(request.headers.get("X-Faction-Id"), 0)
-    is_admin = request.headers.get("X-Is-Admin", "0").strip() in {"1", "true", "True"}
-
     if user_id <= 0:
         return None
 
-    if not user_name:
-        user_name = f"User{user_id}"
-
+    user_name = (request.headers.get("X-User-Name") or "").strip() or f"User{user_id}"
+    faction_id = clamp_int(request.headers.get("X-Faction-Id"), 0)
+    is_admin = request.headers.get("X-Is-Admin", "0").strip() in {"1", "true", "True"}
     if user_id == ADMIN_USER_ID:
         is_admin = True
 
@@ -169,18 +128,13 @@ def require_admin():
     return user, None
 
 
-def is_faction_member(user: dict[str, Any], settings: dict[str, Any]) -> bool:
-    configured_faction = int(settings.get("faction_id") or 0)
-    if configured_faction <= 0:
-        # If faction not set yet, allow admin only until configured.
-        return bool(user["is_admin"] or int(user["user_id"]) == ADMIN_USER_ID)
-    return int(user.get("faction_id") or 0) == configured_faction
+def is_lottery_user(_user: dict[str, Any], _settings: dict[str, Any]) -> bool:
+    return True
 
 
 def build_me_payload(user: dict[str, Any], round_row: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
     with db_conn() as conn:
         ticket_count = get_user_ticket_count(conn, int(round_row["id"]), int(user["user_id"]))
-
     max_tickets = int(settings["max_tickets_per_member"])
     return {
         "user_id": int(user["user_id"]),
@@ -188,7 +142,7 @@ def build_me_payload(user: dict[str, Any], round_row: dict[str, Any], settings: 
         "faction_id": int(user.get("faction_id") or 0),
         "ticket_count": ticket_count,
         "tickets_left": max(0, max_tickets - ticket_count),
-        "is_faction_member": is_faction_member(user, settings),
+        "is_faction_member": True,
         "is_admin": bool(user["is_admin"] or int(user["user_id"]) == ADMIN_USER_ID),
     }
 
@@ -204,54 +158,15 @@ def get_last_winner_payload(conn) -> dict[str, Any] | None:
         "winner_name": last["winner_name"],
         "winning_ticket_number": last["winning_ticket_number"],
         "winner_payout": int(last["winner_payout"] or 0),
+        "rollover_amount": int(last.get("rollover_amount") or 0),
+        "admin_fee_amount": int(last.get("admin_fee_amount") or 0),
         "drawn_at": last["drawn_at"],
     }
 
 
-def payment_key_for_manual_verify(
-    user_id: int,
-    amount_due: int,
-    quantity: int,
-    payment_ref: str | None,
-) -> str:
-    ref = (payment_ref or "").strip() or f"manual-{user_id}-{amount_due}-{quantity}"
-    return f"manual:{user_id}:{amount_due}:{quantity}:{ref}"
-
-
-def verify_payment_stub(
-    *,
-    user: dict[str, Any],
-    settings: dict[str, Any],
-    quantity: int,
-    amount_due: int,
-    payment_ref: str | None,
-) -> tuple[bool, str, str]:
-    """
-    Returns:
-      (verified, payment_key_prefix, payment_ref)
-
-    manual mode:
-      Accepts the request and creates a unique payment key prefix.
-      Good for initial testing while you build the userscript/UI.
-
-    torn mode:
-      Hook point for later real Torn payment verification.
-    """
-    if LOTTERY_VERIFY_MODE == "manual":
-        key_prefix = payment_key_for_manual_verify(
-            user_id=int(user["user_id"]),
-            amount_due=amount_due,
-            quantity=quantity,
-            payment_ref=payment_ref,
-        )
-        return True, key_prefix, payment_ref or "manual-verified"
-
-    if LOTTERY_VERIFY_MODE == "torn":
-        # Placeholder hook.
-        # Later we can wire this to a real Torn payment/log verification flow.
-        return False, "", ""
-
-    return False, "", ""
+def entry_key(user_id: int, quantity: int, entry_ref: str | None) -> str:
+    ref = (entry_ref or "").strip() or f"free-entry-{user_id}-{quantity}"
+    return f"free:{user_id}:{quantity}:{ref}"
 
 
 def run_draw_for_round(conn, round_row: dict[str, Any]) -> dict[str, Any]:
@@ -283,8 +198,7 @@ def run_draw_for_round(conn, round_row: dict[str, Any]) -> dict[str, Any]:
         return updated
 
     winner_ticket = random.choice(tickets)
-
-    updated = save_draw_result(
+    return save_draw_result(
         conn=conn,
         round_id=round_id,
         winner_user_id=int(winner_ticket["user_id"]),
@@ -292,21 +206,14 @@ def run_draw_for_round(conn, round_row: dict[str, Any]) -> dict[str, Any]:
         winning_ticket_id=int(winner_ticket["id"]),
         winning_ticket_number=int(winner_ticket["ticket_number"]),
     )
-    return updated
 
 
 def ensure_round_progression() -> None:
     with db_conn() as conn:
         current_round = maybe_lock_current_round(conn)
-        current_status = str(current_round["status"])
-
-        if current_status == "locked":
+        if str(current_round["status"]) == "locked":
             run_draw_for_round(conn, current_round)
 
-
-# ============================================================
-# OPTIONAL BACKGROUND WATCHER
-# ============================================================
 
 _draw_thread_started = False
 
@@ -324,18 +231,13 @@ def maybe_start_draw_watcher():
     global _draw_thread_started
     if _draw_thread_started or not ENABLE_DRAW_WATCHER:
         return
-    thread = threading.Thread(target=draw_watcher_loop, daemon=True)
-    thread.start()
+    threading.Thread(target=draw_watcher_loop, daemon=True).start()
     _draw_thread_started = True
     print("[lottery] draw watcher started")
 
 
 maybe_start_draw_watcher()
 
-
-# ============================================================
-# REQUEST HOOKS
-# ============================================================
 
 @app.before_request
 def _before_request():
@@ -346,20 +248,9 @@ def _before_request():
             print(f"[lottery] pre-request progression error: {exc}")
 
 
-# ============================================================
-# BASIC ROUTES
-# ============================================================
-
 @app.get("/")
 def index():
-    return jsonify(
-        {
-            "name": "Sinner's Lottery API",
-            "ok": True,
-            "time": now_iso(),
-            "verify_mode": LOTTERY_VERIFY_MODE,
-        }
-    )
+    return jsonify({"name": "Sinner's Lottery API", "ok": True, "time": now_iso(), "mode": "free-entry"})
 
 
 @app.get("/api/health")
@@ -367,54 +258,27 @@ def api_health():
     with db_conn() as conn:
         settings = get_settings(conn)
         current_round = get_or_create_current_round(conn)
-        calculate_round_totals(conn, int(current_round["id"]))
+        totals = calculate_round_totals(conn, int(current_round["id"]))
         current_round = get_round_by_id(conn, int(current_round["id"])) or current_round
+    return ok({"time": now_iso(), "settings": settings, "current_round": current_round, "totals": totals, "mode": "free-entry"})
 
-    return ok(
-        {
-            "time": now_iso(),
-            "settings": settings,
-            "current_round": current_round,
-            "verify_mode": LOTTERY_VERIFY_MODE,
-        }
-    )
-
-
-# ============================================================
-# SIMPLE LOGIN / LOGOUT
-# ============================================================
 
 @app.post("/api/login")
 def api_login():
     data = request.get_json(silent=True) or {}
-
     user_id = clamp_int(data.get("user_id"), 0)
     user_name = str(data.get("user_name") or "").strip()
     faction_id = clamp_int(data.get("faction_id"), 0)
-
     if user_id <= 0:
         return fail("Missing or invalid user_id.")
-
     if not user_name:
         user_name = f"User{user_id}"
-
     is_admin = user_id == ADMIN_USER_ID
-
     session["user_id"] = user_id
     session["user_name"] = user_name
     session["faction_id"] = faction_id
     session["is_admin"] = 1 if is_admin else 0
-
-    return ok(
-        {
-            "user": {
-                "user_id": user_id,
-                "user_name": user_name,
-                "faction_id": faction_id,
-                "is_admin": is_admin,
-            }
-        }
-    )
+    return ok({"user": {"user_id": user_id, "user_name": user_name, "faction_id": faction_id, "is_admin": is_admin}})
 
 
 @app.post("/api/logout")
@@ -431,41 +295,36 @@ def api_me():
     return ok({"user": user})
 
 
-# ============================================================
-# MEMBER ROUTES
-# ============================================================
-
 @app.get("/api/lottery/state")
 def api_lottery_state():
     user, err = require_user()
     if err:
         return err
-
     with db_conn() as conn:
         settings = get_settings(conn)
         current_round = get_or_create_current_round(conn)
-        calculate_round_totals(conn, int(current_round["id"]))
+        totals = calculate_round_totals(conn, int(current_round["id"]))
         current_round = get_round_by_id(conn, int(current_round["id"])) or current_round
         last_winner = get_last_winner_payload(conn)
-
     me = build_me_payload(user, current_round, settings)
-
     return ok(
         {
             "settings": {
                 "enabled": int(settings["enabled"]),
-                "faction_id": int(settings["faction_id"]),
-                "payment_receiver_id": int(settings["payment_receiver_id"]),
-                "payment_receiver_name": settings["payment_receiver_name"],
                 "ticket_price": int(settings["ticket_price"]),
-                "prize_percent": int(settings["prize_percent"]),
+                "winner_percent": int(settings["winner_percent"]),
+                "rollover_percent": int(settings["rollover_percent"]),
+                "admin_fee_percent": int(settings["admin_fee_percent"]),
                 "max_tickets_per_member": int(settings["max_tickets_per_member"]),
                 "draw_day": int(settings["draw_day"]),
                 "draw_hour": int(settings["draw_hour"]),
                 "draw_minute": int(settings["draw_minute"]),
                 "timezone": settings["timezone"],
+                "payment_receiver_id": int(settings["payment_receiver_id"]),
+                "payment_receiver_name": settings["payment_receiver_name"],
             },
             "round": current_round,
+            "totals": totals,
             "me": me,
             "last_winner": last_winner,
         }
@@ -477,29 +336,13 @@ def api_lottery_wheel():
     user, err = require_user()
     if err:
         return err
-
     with db_conn() as conn:
         settings = get_settings(conn)
-        if not is_faction_member(user, settings):
-            return fail("Faction members only.", 403)
-
+        if not is_lottery_user(user, settings):
+            return fail("Not allowed.", 403)
         current_round = get_or_create_current_round(conn)
         entries = get_wheel_entries(conn, int(current_round["id"]))
-
-    return ok(
-        {
-            "round_id": int(current_round["id"]),
-            "entries": [
-                {
-                    "ticket_id": int(e["ticket_id"]),
-                    "ticket_number": int(e["ticket_number"]),
-                    "user_id": int(e["user_id"]),
-                    "label": e["user_name"],
-                }
-                for e in entries
-            ],
-        }
-    )
+    return ok({"round_id": int(current_round["id"]), "entries": [{"ticket_id": int(e["ticket_id"]), "ticket_number": int(e["ticket_number"]), "user_id": int(e["user_id"]), "label": e["user_name"]} for e in entries]})
 
 
 @app.post("/api/lottery/buy")
@@ -507,53 +350,31 @@ def api_lottery_buy():
     user, err = require_user()
     if err:
         return err
-
     data = request.get_json(silent=True) or {}
     quantity = clamp_int(data.get("quantity"), 0)
-
     if quantity < 1:
         return fail("Quantity must be at least 1.")
-
     with db_conn() as conn:
         settings = get_settings(conn)
-
         if not int(settings["enabled"]):
             return fail("Lottery is disabled.", 403)
-
-        if not is_faction_member(user, settings):
-            return fail("Faction members only.", 403)
-
-        current_round = get_or_create_current_round(conn)
         current_round = maybe_lock_current_round(conn)
-
         if current_round["status"] != "open":
-            return fail("Ticket sales are closed for this round.", 409)
-
+            return fail("Entries are closed for this round.", 409)
         max_tickets = int(settings["max_tickets_per_member"])
         current_count = get_user_ticket_count(conn, int(current_round["id"]), int(user["user_id"]))
-
         if current_count + quantity > max_tickets:
-            return fail(
-                "Ticket limit exceeded.",
-                409,
-                current_tickets=current_count,
-                max_tickets=max_tickets,
-            )
-
+            return fail("Ticket limit exceeded.", 409, current_tickets=current_count, max_tickets=max_tickets)
         ticket_price = int(settings["ticket_price"])
-        amount_due = ticket_price * quantity
-
+        display_value = ticket_price * quantity
         return ok(
             {
                 "round_id": int(current_round["id"]),
                 "quantity": quantity,
-                "amount_due": amount_due,
+                "amount_due": display_value,
                 "ticket_price": ticket_price,
-                "payment_to": {
-                    "user_id": int(settings["payment_receiver_id"]),
-                    "name": settings["payment_receiver_name"],
-                },
-                "message": f"Send exactly ${amount_due:,} to {settings['payment_receiver_name']} then verify payment.",
+                "message": f"Confirm {quantity} free entr{'y' if quantity == 1 else 'ies'}. Display value: ${display_value:,}.",
+                "mode": "free-entry",
             }
         )
 
@@ -563,53 +384,25 @@ def api_lottery_verify_payment():
     user, err = require_user()
     if err:
         return err
-
     data = request.get_json(silent=True) or {}
     quantity = clamp_int(data.get("quantity"), 0)
-    payment_ref = str(data.get("payment_ref") or "").strip() or None
-
+    entry_ref = str(data.get("payment_ref") or "").strip() or None
     if quantity < 1:
         return fail("Quantity must be at least 1.")
-
     with db_conn() as conn:
         settings = get_settings(conn)
-
         if not int(settings["enabled"]):
             return fail("Lottery is disabled.", 403)
-
-        if not is_faction_member(user, settings):
-            return fail("Faction members only.", 403)
-
-        current_round = get_or_create_current_round(conn)
         current_round = maybe_lock_current_round(conn)
-
         if current_round["status"] != "open":
-            return fail("Ticket sales are closed for this round.", 409)
-
+            return fail("Entries are closed for this round.", 409)
         max_tickets = int(settings["max_tickets_per_member"])
         current_count = get_user_ticket_count(conn, int(current_round["id"]), int(user["user_id"]))
         if current_count + quantity > max_tickets:
-            return fail(
-                "Ticket limit exceeded.",
-                409,
-                current_tickets=current_count,
-                max_tickets=max_tickets,
-            )
+            return fail("Ticket limit exceeded.", 409, current_tickets=current_count, max_tickets=max_tickets)
 
-        amount_due = int(settings["ticket_price"]) * quantity
-
-        verified, payment_key_prefix, resolved_payment_ref = verify_payment_stub(
-            user=user,
-            settings=settings,
-            quantity=quantity,
-            amount_due=amount_due,
-            payment_ref=payment_ref,
-        )
-        if not verified:
-            if LOTTERY_VERIFY_MODE == "torn":
-                return fail("Real payment verification is not wired yet in this mode.", 501)
-            return fail("Payment could not be verified.", 409)
-
+        display_total = int(settings["ticket_price"]) * quantity
+        key_prefix = entry_key(int(user["user_id"]), quantity, entry_ref)
         try:
             ticket_numbers = add_verified_tickets(
                 conn=conn,
@@ -617,16 +410,15 @@ def api_lottery_verify_payment():
                 user_id=int(user["user_id"]),
                 user_name=str(user["user_name"]),
                 quantity=quantity,
-                payment_amount_total=amount_due,
-                payment_key_prefix=payment_key_prefix,
-                payment_ref=resolved_payment_ref,
+                payment_amount_total=display_total,
+                payment_key_prefix=key_prefix,
+                payment_ref=entry_ref or "free-entry-confirmed",
             )
         except Exception as exc:
             return fail(str(exc), 409)
 
         totals = calculate_round_totals(conn, int(current_round["id"]))
         updated_round = get_round_by_id(conn, int(current_round["id"])) or current_round
-
         return ok(
             {
                 "round_id": int(updated_round["id"]),
@@ -634,8 +426,11 @@ def api_lottery_verify_payment():
                 "ticket_numbers": ticket_numbers,
                 "gross_pool": int(totals["gross_pool"]),
                 "winner_payout": int(totals["winner_payout"]),
+                "rollover_amount": int(totals["rollover_amount"]),
+                "admin_fee_amount": int(totals["admin_fee_amount"]),
                 "total_tickets": int(totals["total_tickets"]),
-                "payment_ref": resolved_payment_ref,
+                "payment_ref": entry_ref or "free-entry-confirmed",
+                "mode": "free-entry",
             }
         )
 
@@ -645,41 +440,25 @@ def api_lottery_history():
     user, err = require_user()
     if err:
         return err
-
     with db_conn() as conn:
         settings = get_settings(conn)
-        if not is_faction_member(user, settings):
-            return fail("Faction members only.", 403)
-
+        if not is_lottery_user(user, settings):
+            return fail("Not allowed.", 403)
         rows = get_history(conn, limit=20)
-
     return ok({"history": rows})
 
-
-# ============================================================
-# ADMIN ROUTES
-# ============================================================
 
 @app.get("/api/lottery/admin/state")
 def api_lottery_admin_state():
     _, err = require_admin()
     if err:
         return err
-
     with db_conn() as conn:
         current_round = get_or_create_current_round(conn)
         calculate_round_totals(conn, int(current_round["id"]))
         payload = get_admin_round_state(conn, int(current_round["id"]))
         settings = get_settings(conn)
-
-    return ok(
-        {
-            "settings": settings,
-            "round": payload["round"],
-            "entrants": payload["entrants"],
-            "tickets": payload["tickets"],
-        }
-    )
+    return ok({"settings": settings, "round": payload["round"], "entrants": payload["entrants"], "tickets": payload["tickets"]})
 
 
 @app.post("/api/lottery/admin/force-draw")
@@ -687,20 +466,12 @@ def api_lottery_admin_force_draw():
     _, err = require_admin()
     if err:
         return err
-
     with db_conn() as conn:
         current_round = get_or_create_current_round(conn)
         if current_round["status"] == "cancelled":
             return fail("Current round is cancelled.", 409)
-
         result = run_draw_for_round(conn, current_round)
-
-    return ok(
-        {
-            "message": "Draw completed.",
-            "round": result,
-        }
-    )
+    return ok({"message": "Draw completed.", "round": result})
 
 
 @app.post("/api/lottery/admin/cancel-round")
@@ -708,25 +479,15 @@ def api_lottery_admin_cancel_round():
     _, err = require_admin()
     if err:
         return err
-
     data = request.get_json(silent=True) or {}
     reason = str(data.get("reason") or "").strip()
-
     with db_conn() as conn:
         current_round = get_or_create_current_round(conn)
         if current_round["status"] == "drawn":
             return fail("Cannot cancel a drawn round.", 409)
-
         set_round_status(conn, int(current_round["id"]), "cancelled")
         updated = get_round_by_id(conn, int(current_round["id"])) or current_round
-
-    return ok(
-        {
-            "message": "Round cancelled.",
-            "reason": reason,
-            "round": updated,
-        }
-    )
+    return ok({"message": "Round cancelled.", "reason": reason, "round": updated})
 
 
 @app.post("/api/lottery/admin/settings")
@@ -736,14 +497,14 @@ def api_lottery_admin_settings():
         return err
 
     data = request.get_json(silent=True) or {}
-
     allowed_payload = {
         "enabled": clamp_int(data.get("enabled"), 1),
-        "faction_id": clamp_int(data.get("faction_id"), DEFAULT_FACTION_ID),
         "payment_receiver_id": clamp_int(data.get("payment_receiver_id"), ADMIN_USER_ID),
         "payment_receiver_name": str(data.get("payment_receiver_name") or ADMIN_USER_NAME).strip() or ADMIN_USER_NAME,
-        "ticket_price": clamp_int(data.get("ticket_price"), 1_000_000),
-        "prize_percent": clamp_int(data.get("prize_percent"), 75),
+        "ticket_price": clamp_int(data.get("ticket_price"), 850_000),
+        "winner_percent": clamp_int(data.get("winner_percent"), 50),
+        "rollover_percent": clamp_int(data.get("rollover_percent"), 35),
+        "admin_fee_percent": clamp_int(data.get("admin_fee_percent"), 15),
         "max_tickets_per_member": clamp_int(data.get("max_tickets_per_member"), 5),
         "draw_day": clamp_int(data.get("draw_day"), 6),
         "draw_hour": clamp_int(data.get("draw_hour"), 20),
@@ -753,8 +514,6 @@ def api_lottery_admin_settings():
 
     if allowed_payload["ticket_price"] <= 0:
         return fail("ticket_price must be greater than 0.")
-    if not (1 <= allowed_payload["prize_percent"] <= 100):
-        return fail("prize_percent must be between 1 and 100.")
     if not (1 <= allowed_payload["max_tickets_per_member"] <= 100):
         return fail("max_tickets_per_member must be between 1 and 100.")
     if not (0 <= allowed_payload["draw_hour"] <= 23):
@@ -763,21 +522,13 @@ def api_lottery_admin_settings():
         return fail("draw_minute must be between 0 and 59.")
     if not (0 <= allowed_payload["draw_day"] <= 6):
         return fail("draw_day must be between 0 and 6.")
-
+    total_percent = allowed_payload["winner_percent"] + allowed_payload["rollover_percent"] + allowed_payload["admin_fee_percent"]
+    if total_percent != 100:
+        return fail("winner_percent + rollover_percent + admin_fee_percent must equal 100.")
     with db_conn() as conn:
         saved = update_settings(conn, allowed_payload)
+    return ok({"message": "Settings updated.", "settings": saved})
 
-    return ok(
-        {
-            "message": "Settings updated.",
-            "settings": saved,
-        }
-    )
-
-
-# ============================================================
-# ERROR HANDLERS
-# ============================================================
 
 @app.errorhandler(404)
 def not_found(_e):
@@ -794,10 +545,6 @@ def internal_error(e):
     print(f"[lottery] internal error: {e}")
     return fail("Internal server error.", 500)
 
-
-# ============================================================
-# MAIN
-# ============================================================
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
