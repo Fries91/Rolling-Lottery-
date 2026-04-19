@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Sinner's Lottery
-// @namespace    sinners-lottery
+// @name         Sinner's Giveaway
+// @namespace    sinners-giveaway
 // @version      1.0.0
-// @description  Free-entry weekly lottery with spinning wheel, history, rollover, and admin tools.
+// @description  Free-entry weekly giveaway with spinning wheel, history, rollover, and admin tools.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
@@ -22,7 +22,7 @@
     // 01. CONFIG
     // ============================================================
 
-    const APP_NAME = "Sinner's Lottery";
+    const APP_NAME = "Sinner's Giveaway";
     const BASE_URL = 'https://YOUR-RENDER-APP.onrender.com'; // <-- replace this
     const ADMIN_USER_ID = 3679030;
     const ADMIN_NAME = 'Fries91';
@@ -579,7 +579,7 @@
         return `
             <div class="sl-grid">
                 <div class="sl-card">
-                    <div class="sl-card-title">Current Round</div>
+                    <div class="sl-card-title">Current Giveaway</div>
                     <div class="sl-stat-row"><span>Status</span><b>${esc(round.status || '-')}</b></div>
                     <div class="sl-stat-row"><span>Countdown</span><b id="sl-countdown">${esc(countdownTo(round.draw_at))}</b></div>
                     <div class="sl-stat-row"><span>Draw Time</span><b>${esc(formatDateTime(round.draw_at))}</b></div>
@@ -633,7 +633,7 @@
         return `
             <div class="sl-grid sl-grid-2">
                 <div class="sl-card">
-                    <div class="sl-card-title">Enter Draw</div>
+                    <div class="sl-card-title">Enter Giveaway</div>
                     <div class="sl-buy-box">
                         <div class="sl-stat-row"><span>Display Ticket Value</span><b>${fmtMoney(settings.ticket_price || 0)}</b></div>
                         <div class="sl-stat-row"><span>My Tickets</span><b>${Number(me.ticket_count || 0)}</b></div>
@@ -647,7 +647,7 @@
                         </select>
 
                         <div class="sl-button-row">
-                            <button id="sl-buy-btn" class="sl-btn primary" ${canBuy && left > 0 ? '' : 'disabled'}>Enter Draw</button>
+                            <button id="sl-buy-btn" class="sl-btn primary" ${canBuy && left > 0 ? '' : 'disabled'}>Enter Giveaway</button>
                             <button id="sl-refresh-btn" class="sl-btn">Refresh</button>
                         </div>
 
@@ -658,7 +658,7 @@
                 </div>
 
                 <div class="sl-card">
-                    <div class="sl-card-title">Prize Wheel</div>
+                    <div class="sl-card-title">Giveaway Wheel</div>
                     <div id="sl-wheel-wrap"></div>
                     <div class="sl-button-row">
                         <button id="sl-spin-btn" class="sl-btn" ${state.round && state.round.status === 'drawn' ? '' : 'disabled'}>Show Winner Spin</button>
@@ -709,7 +709,7 @@
     function rulesHtml() {
         return `
             <div class="sl-card">
-                <div class="sl-card-title">Sinner's Lottery Rules</div>
+                <div class="sl-card-title">Sinner's Giveaway Rules</div>
                 <div class="sl-rules">
                     <div class="sl-rule"><b>Entry:</b> Free entry for all Torn users</div>
                     <div class="sl-rule"><b>Display ticket value:</b> ${fmtMoney((state.settings && state.settings.ticket_price) || 850000)} per ticket</div>
@@ -741,7 +741,7 @@
                 <div class="sl-card">
                     <div class="sl-card-title">Admin Settings</div>
                     <label class="sl-label">Enabled</label>
-                    <label class="sl-check"><input id="sl-admin-enabled" type="checkbox" ${Number(settings.enabled || 0) ? 'checked' : ''}> Lottery enabled</label>
+                    <label class="sl-check"><input id="sl-admin-enabled" type="checkbox" ${Number(settings.enabled || 0) ? 'checked' : ''}> Giveaway enabled</label>
 
                     <label class="sl-label">Display Ticket Value</label>
                     <input id="sl-admin-ticket-price" class="sl-input" type="number" value="${Number(settings.ticket_price || 850000)}">
@@ -825,7 +825,7 @@
 
             <div class="sl-tabs">
                 <button class="sl-tab ${tab === 'overview' ? 'active' : ''}" data-tab="overview">Overview</button>
-                <button class="sl-tab ${tab === 'lottery' ? 'active' : ''}" data-tab="lottery">Lottery</button>
+                <button class="sl-tab ${tab === 'lottery' ? 'active' : ''}" data-tab="lottery">Giveaway</button>
                 <button class="sl-tab ${tab === 'history' ? 'active' : ''}" data-tab="history">History</button>
                 <button class="sl-tab ${tab === 'rules' ? 'active' : ''}" data-tab="rules">Rules</button>
                 ${isAdmin() ? `<button class="sl-tab ${tab === 'admin' ? 'active' : ''}" data-tab="admin">Admin</button>` : ''}
@@ -907,15 +907,15 @@
                 shield = document.createElement('button');
                 shield.id = 'sl-shield';
                 shield.innerHTML = `
-                    <span class="sl-shield-top">Sinner's</span>
-                    <span class="sl-shield-main">Lottery</span>
+                    <span class="sl-shield-icon">🎁</span>
+                    <span class="sl-shield-label">Sinner's Giveaway</span>
                 `;
                 document.body.appendChild(shield);
                 bindTap(shield, () => toggleOverlay());
                 makeHoldDraggable(shield, shield, K_SHIELD_POS);
             }
             els.shield = shield;
-            applySavedPosition(els.shield, K_SHIELD_POS, { right: '12px', top: '45%' });
+            applySavedPosition(els.shield, K_SHIELD_POS, { left: '8px', bottom: '126px' });
         }
 
         if (!els.overlay || !document.body.contains(els.overlay)) {
@@ -1045,39 +1045,70 @@
         #sl-shield {
             position: fixed;
             z-index: 2147483647;
-            width: 76px;
-            height: 76px;
-            border: 1px solid rgba(255,255,255,0.18);
-            border-radius: 18px;
-            background: radial-gradient(circle at 30% 30%, #b31d26 0%, #7c1018 42%, #2b070b 100%);
-            color: #fff;
-            box-shadow: 0 10px 28px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.08);
+            left: 8px;
+            bottom: 126px;
+            min-width: 210px;
+            height: 52px;
+            border: 1px solid #a66a2a;
+            border-radius: 16px;
+            background: linear-gradient(180deg, #5e0d10 0%, #3f090b 55%, #240506 100%);
+            color: #f7d9a2;
+            box-shadow: 0 0 0 1px rgba(255,255,255,0.06) inset, 0 6px 18px rgba(0,0,0,0.45);
             display: flex;
-            flex-direction: column;
             align-items: center;
-            justify-content: center;
+            justify-content: flex-start;
+            gap: 8px;
             cursor: pointer;
             user-select: none;
-            padding: 0;
+            -webkit-user-select: none;
+            padding: 10px 14px;
             overflow: hidden;
+            font-weight: 700;
+            font-size: 15px;
+            line-height: 1;
         }
 
         #sl-shield.dragging, #sl-overlay.dragging {
             opacity: 0.88;
         }
 
-        #sl-shield .sl-shield-top {
-            font-size: 10px;
-            line-height: 1;
-            opacity: 0.9;
+        #sl-shield .sl-shield-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 18px;
+            min-width: 18px;
+            font-size: 16px;
         }
 
-        #sl-shield .sl-shield-main {
-            font-size: 13px;
-            font-weight: 800;
-            line-height: 1.1;
-            text-align: center;
-            margin-top: 3px;
+        #sl-shield .sl-shield-label {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        #sl-shield::after {
+            content: "🔒";
+            margin-left: auto;
+            font-size: 14px;
+            opacity: 0.95;
+        }
+
+        #sl-shield:active {
+            transform: scale(0.98);
+        }
+
+
+        @media (max-width: 700px) {
+            #sl-shield {
+                left: 6px;
+                bottom: 126px;
+                min-width: 195px;
+                height: 50px;
+                padding: 9px 12px;
+                font-size: 14px;
+                border-radius: 15px;
+            }
         }
 
         #sl-overlay {
