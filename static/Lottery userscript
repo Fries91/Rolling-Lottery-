@@ -13,6 +13,8 @@
 // @grant        GM_xmlhttpRequest
 // @connect      *
 // @run-at       document-end
+// @downloadURL  https://sinner-s-lottery.onrender.com/static/sinners-giveaway.user.js
+// @updateURL    https://sinner-s-lottery.onrender.com/static/sinners-giveaway.user.js
 // ==/UserScript==
 
 (function () {
