@@ -2,7 +2,7 @@
 // @name         Sinner's Lottery
 // @namespace    sinners-lottery
 // @version      1.0.0
-// @description  Faction-only weekly lottery with spinning wheel, buy tickets, verify payment, history, and admin tools.
+// @description  Free-entry weekly lottery with spinning wheel, history, rollover, and admin tools.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
@@ -351,37 +351,44 @@
     // 07. BUY / VERIFY / ADMIN
     // ============================================================
 
+    
     async function buyTicketsFlow() {
         if (!state.round || !state.settings || !state.me) return;
         const qty = Math.max(1, Math.min(Number(state.buyQty || 1), Number(state.settings.max_tickets_per_member || 5)));
 
         try {
             const buy = await api('/api/lottery/buy', 'POST', { quantity: qty });
-            if (!buy.ok) throw new Error(buy.error || 'Buy failed');
+            if (!buy.ok) throw new Error(buy.error || 'Entry failed');
 
             const message =
-                `Send ${fmtMoney(buy.amount_due)} to ${buy.payment_to.name} [${buy.payment_to.user_id}] in Torn, then press OK to verify.\n\n` +
-                `Quantity: ${qty}\n` +
-                `Ticket price: ${fmtMoney(buy.ticket_price)}\n` +
-                `Amount due: ${fmtMoney(buy.amount_due)}`;
+                `Confirm ${qty} free entr${qty === 1 ? 'y' : 'ies'}.
+
+` +
+                `Display ticket value: ${fmtMoney(buy.ticket_price)}
+` +
+                `Display total value: ${fmtMoney(buy.amount_due)}
+
+` +
+                `This version uses free entry. No payment step is required.`;
 
             const go = confirm(message);
             if (!go) return;
 
-            let paymentRef = prompt('Optional payment reference / note for your own tracking:', '') || '';
+            let entryRef = prompt('Optional note for this entry:', '') || '';
 
             const verified = await api('/api/lottery/verify-payment', 'POST', {
                 quantity: qty,
-                payment_ref: paymentRef,
+                payment_ref: entryRef,
             });
-            if (!verified.ok) throw new Error(verified.error || 'Verify failed');
+            if (!verified.ok) throw new Error(verified.error || 'Entry failed');
 
-            showToast(`Added ${verified.added_tickets} ticket(s)`);
+            showToast(`Added ${verified.added_tickets} entr${verified.added_tickets === 1 ? 'y' : 'ies'}`);
             await loadAll();
         } catch (e) {
-            showToast(e.error || e.message || 'Buy/verify failed', true);
+            showToast(e.error || e.message || 'Entry failed', true);
         }
     }
+
 
     async function forceDrawFlow() {
         if (!isAdmin()) return;
@@ -409,23 +416,31 @@
         }
     }
 
+    
     async function saveAdminSettings() {
         if (!isAdmin()) return;
 
-        const ticketPrice = Number(byId('sl-admin-ticket-price')?.value || 1000000);
-        const prizePercent = Number(byId('sl-admin-prize-percent')?.value || 75);
+        const ticketPrice = Number(byId('sl-admin-ticket-price')?.value || 850000);
+        const winnerPercent = Number(byId('sl-admin-winner-percent')?.value || 50);
+        const rolloverPercent = Number(byId('sl-admin-rollover-percent')?.value || 35);
+        const adminFeePercent = Number(byId('sl-admin-admin-fee-percent')?.value || 15);
         const maxTickets = Number(byId('sl-admin-max-tickets')?.value || 5);
-        const factionId = Number(byId('sl-admin-faction-id')?.value || 0);
         const enabled = byId('sl-admin-enabled')?.checked ? 1 : 0;
+
+        if ((winnerPercent + rolloverPercent + adminFeePercent) !== 100) {
+            showToast('Cuts must total 100%', true);
+            return;
+        }
 
         try {
             const res = await api('/api/lottery/admin/settings', 'POST', {
                 enabled,
-                faction_id: factionId,
                 payment_receiver_id: ADMIN_USER_ID,
                 payment_receiver_name: ADMIN_NAME,
                 ticket_price: ticketPrice,
-                prize_percent: prizePercent,
+                winner_percent: winnerPercent,
+                rollover_percent: rolloverPercent,
+                admin_fee_percent: adminFeePercent,
                 max_tickets_per_member: maxTickets,
                 draw_day: 6,
                 draw_hour: 20,
@@ -439,6 +454,7 @@
             showToast(e.error || e.message || 'Save failed', true);
         }
     }
+
 
     // ============================================================
     // 08. WHEEL
@@ -551,12 +567,14 @@
     // 09. HTML BUILD
     // ============================================================
 
+    
     function overviewHtml() {
         const round = state.round || {};
         const settings = state.settings || {};
         const me = state.me || {};
         const pool = Number(round.gross_pool || 0);
         const payout = Number(round.winner_payout || 0);
+        const rollover = Number(round.rollover_amount || 0);
 
         return `
             <div class="sl-grid">
@@ -570,10 +588,11 @@
 
                 <div class="sl-card">
                     <div class="sl-card-title">Pool</div>
-                    <div class="sl-stat-row"><span>Ticket Price</span><b>${fmtMoney(settings.ticket_price || 0)}</b></div>
+                    <div class="sl-stat-row"><span>Display Ticket Value</span><b>${fmtMoney(settings.ticket_price || 0)}</b></div>
                     <div class="sl-stat-row"><span>Total Tickets</span><b>${Number(round.total_tickets || 0)}</b></div>
                     <div class="sl-stat-row"><span>Gross Pool</span><b>${fmtMoney(pool)}</b></div>
-                    <div class="sl-stat-row"><span>Winner Gets</span><b>${fmtMoney(payout)}</b></div>
+                    <div class="sl-stat-row"><span>Winner Cut</span><b>${fmtMoney(payout)}</b></div>
+                    <div class="sl-stat-row"><span>Rollover Cut</span><b>${fmtMoney(rollover)}</b></div>
                 </div>
 
                 <div class="sl-card">
@@ -581,13 +600,14 @@
                     <div class="sl-stat-row"><span>Name</span><b>${esc(me.user_name || '-')}</b></div>
                     <div class="sl-stat-row"><span>My Tickets</span><b>${Number(me.ticket_count || 0)}</b></div>
                     <div class="sl-stat-row"><span>Tickets Left</span><b>${Number(me.tickets_left || 0)}</b></div>
-                    <div class="sl-stat-row"><span>Faction Access</span><b>${me.is_faction_member ? 'Yes' : 'No'}</b></div>
+                    <div class="sl-stat-row"><span>Access</span><b>${me.user_id ? 'Open to all Torn users' : 'Login required'}</b></div>
                 </div>
 
                 <div class="sl-card">
                     <div class="sl-card-title">Last Winner</div>
                     <div class="sl-stat-row"><span>Name</span><b>${esc((state.lastWinner && state.lastWinner.winner_name) || '-')}</b></div>
-                    <div class="sl-stat-row"><span>Payout</span><b>${fmtMoney((state.lastWinner && state.lastWinner.winner_payout) || 0)}</b></div>
+                    <div class="sl-stat-row"><span>Winner Cut</span><b>${fmtMoney((state.lastWinner && state.lastWinner.winner_payout) || 0)}</b></div>
+                    <div class="sl-stat-row"><span>Rollover Cut</span><b>${fmtMoney((state.lastWinner && state.lastWinner.rollover_amount) || 0)}</b></div>
                     <div class="sl-stat-row"><span>Ticket #</span><b>${esc((state.lastWinner && state.lastWinner.winning_ticket_number) || '-')}</b></div>
                     <div class="sl-stat-row"><span>Drawn</span><b>${esc((state.lastWinner && formatDateTime(state.lastWinner.drawn_at)) || '-')}</b></div>
                 </div>
@@ -595,12 +615,14 @@
         `;
     }
 
+
+    
     function lotteryHtml() {
         const me = state.me || {};
         const settings = state.settings || {};
         const round = state.round || {};
 
-        const canBuy = !!(me.is_faction_member && round.status === 'open');
+        const canBuy = !!(me.user_id && round.status === 'open');
         const maxAllowed = Number(settings.max_tickets_per_member || 5);
         const left = Number(me.tickets_left || 0);
         const options = [];
@@ -611,12 +633,13 @@
         return `
             <div class="sl-grid sl-grid-2">
                 <div class="sl-card">
-                    <div class="sl-card-title">Buy Tickets</div>
+                    <div class="sl-card-title">Enter Draw</div>
                     <div class="sl-buy-box">
-                        <div class="sl-stat-row"><span>Ticket Price</span><b>${fmtMoney(settings.ticket_price || 0)}</b></div>
+                        <div class="sl-stat-row"><span>Display Ticket Value</span><b>${fmtMoney(settings.ticket_price || 0)}</b></div>
                         <div class="sl-stat-row"><span>My Tickets</span><b>${Number(me.ticket_count || 0)}</b></div>
                         <div class="sl-stat-row"><span>Tickets Left</span><b>${left}</b></div>
-                        <div class="sl-stat-row"><span>Payment To</span><b>${esc(settings.payment_receiver_name || ADMIN_NAME)} [${Number(settings.payment_receiver_id || ADMIN_USER_ID)}]</b></div>
+                        <div class="sl-stat-row"><span>Winner Cut</span><b>${Number(settings.winner_percent || 50)}%</b></div>
+                        <div class="sl-stat-row"><span>Rollover Cut</span><b>${Number(settings.rollover_percent || 35)}%</b></div>
 
                         <label class="sl-label">Quantity</label>
                         <select id="sl-buy-qty" class="sl-input">
@@ -624,12 +647,12 @@
                         </select>
 
                         <div class="sl-button-row">
-                            <button id="sl-buy-btn" class="sl-btn primary" ${canBuy && left > 0 ? '' : 'disabled'}>Buy + Verify</button>
+                            <button id="sl-buy-btn" class="sl-btn primary" ${canBuy && left > 0 ? '' : 'disabled'}>Enter Draw</button>
                             <button id="sl-refresh-btn" class="sl-btn">Refresh</button>
                         </div>
 
                         <div class="sl-note">
-                            Members can buy up to ${maxAllowed} tickets per weekly draw. One verified ticket equals one slot on the wheel.
+                            Open to all Torn users. Free entry. Each entry still uses the display ticket value for pool and payout calculations.
                         </div>
                     </div>
                 </div>
@@ -657,6 +680,8 @@
         `;
     }
 
+
+    
     function historyHtml() {
         const rows = state.history || [];
         return `
@@ -668,7 +693,8 @@
                             <div><b>${esc(r.week_key || '-')}</b></div>
                             <div>Status: ${esc(r.status || '-')}</div>
                             <div>Winner: <b>${esc(r.winner_name || 'None')}</b></div>
-                            <div>Payout: <b>${fmtMoney(r.winner_payout || 0)}</b></div>
+                            <div>Winner Cut: <b>${fmtMoney(r.winner_payout || 0)}</b></div>
+                            <div>Rollover Cut: <b>${fmtMoney(r.rollover_amount || 0)}</b></div>
                             <div>Tickets: <b>${Number(r.total_tickets || 0)}</b></div>
                             <div>Drawn: ${esc(formatDateTime(r.drawn_at || r.draw_at))}</div>
                         </div>
@@ -678,25 +704,28 @@
         `;
     }
 
+
+    
     function rulesHtml() {
         return `
             <div class="sl-card">
                 <div class="sl-card-title">Sinner's Lottery Rules</div>
                 <div class="sl-rules">
-                    <div class="sl-rule"><b>Ticket price:</b> ${fmtMoney((state.settings && state.settings.ticket_price) || 1000000)} per ticket</div>
+                    <div class="sl-rule"><b>Entry:</b> Free entry for all Torn users</div>
+                    <div class="sl-rule"><b>Display ticket value:</b> ${fmtMoney((state.settings && state.settings.ticket_price) || 850000)} per ticket</div>
                     <div class="sl-rule"><b>Weekly cycle:</b> Sunday opening, Saturday 8:00 PM draw</div>
-                    <div class="sl-rule"><b>Prize payout:</b> ${Number((state.settings && state.settings.prize_percent) || 75)}% of the gross pool</div>
-                    <div class="sl-rule"><b>Ticket limit:</b> Max ${Number((state.settings && state.settings.max_tickets_per_member) || 5)} tickets per member each round</div>
-                    <div class="sl-rule"><b>Access:</b> Faction members only</div>
-                    <div class="sl-rule"><b>Wheel slots:</b> Your name appears once for each verified ticket</div>
-                    <div class="sl-rule"><b>Payments:</b> Tickets count only after payment verification</div>
-                    <div class="sl-rule"><b>Receiver:</b> ${esc((state.settings && state.settings.payment_receiver_name) || ADMIN_NAME)} [${Number((state.settings && state.settings.payment_receiver_id) || ADMIN_USER_ID)}]</div>
+                    <div class="sl-rule"><b>Winner cut:</b> ${Number((state.settings && state.settings.winner_percent) || 50)}% of the gross pool</div>
+                    <div class="sl-rule"><b>Rollover cut:</b> ${Number((state.settings && state.settings.rollover_percent) || 35)}% of the gross pool</div>
+                    <div class="sl-rule"><b>Ticket limit:</b> Max ${Number((state.settings && state.settings.max_tickets_per_member) || 5)} tickets per user each round</div>
+                    <div class="sl-rule"><b>Wheel slots:</b> Your name appears once for each confirmed entry</div>
                     <div class="sl-rule"><b>Winner:</b> Chosen server-side, then displayed on the spinning wheel</div>
                 </div>
             </div>
         `;
     }
 
+
+    
     function adminHtml() {
         if (!isAdmin()) {
             return `<div class="sl-card"><div class="sl-card-title">Admin</div><div class="sl-empty">Admin only</div></div>`;
@@ -714,16 +743,19 @@
                     <label class="sl-label">Enabled</label>
                     <label class="sl-check"><input id="sl-admin-enabled" type="checkbox" ${Number(settings.enabled || 0) ? 'checked' : ''}> Lottery enabled</label>
 
-                    <label class="sl-label">Faction ID</label>
-                    <input id="sl-admin-faction-id" class="sl-input" type="number" value="${Number(settings.faction_id || 0)}">
+                    <label class="sl-label">Display Ticket Value</label>
+                    <input id="sl-admin-ticket-price" class="sl-input" type="number" value="${Number(settings.ticket_price || 850000)}">
 
-                    <label class="sl-label">Ticket Price</label>
-                    <input id="sl-admin-ticket-price" class="sl-input" type="number" value="${Number(settings.ticket_price || 1000000)}">
+                    <label class="sl-label">Winner %</label>
+                    <input id="sl-admin-winner-percent" class="sl-input" type="number" value="${Number(settings.winner_percent || 50)}">
 
-                    <label class="sl-label">Prize Percent</label>
-                    <input id="sl-admin-prize-percent" class="sl-input" type="number" value="${Number(settings.prize_percent || 75)}">
+                    <label class="sl-label">Rollover %</label>
+                    <input id="sl-admin-rollover-percent" class="sl-input" type="number" value="${Number(settings.rollover_percent || 35)}">
 
-                    <label class="sl-label">Max Tickets / Member</label>
+                    <label class="sl-label">Admin %</label>
+                    <input id="sl-admin-admin-fee-percent" class="sl-input" type="number" value="${Number(settings.admin_fee_percent || 15)}">
+
+                    <label class="sl-label">Max Tickets / User</label>
                     <input id="sl-admin-max-tickets" class="sl-input" type="number" value="${Number(settings.max_tickets_per_member || 5)}">
 
                     <div class="sl-button-row">
@@ -738,7 +770,9 @@
                     <div class="sl-stat-row"><span>Status</span><b>${esc(round.status || '-')}</b></div>
                     <div class="sl-stat-row"><span>Total Tickets</span><b>${Number(round.total_tickets || 0)}</b></div>
                     <div class="sl-stat-row"><span>Gross Pool</span><b>${fmtMoney(round.gross_pool || 0)}</b></div>
-                    <div class="sl-stat-row"><span>Winner Gets</span><b>${fmtMoney(round.winner_payout || 0)}</b></div>
+                    <div class="sl-stat-row"><span>Winner Cut</span><b>${fmtMoney(round.winner_payout || 0)}</b></div>
+                    <div class="sl-stat-row"><span>Rollover Cut</span><b>${fmtMoney(round.rollover_amount || 0)}</b></div>
+                    <div class="sl-stat-row"><span>Admin Cut</span><b>${fmtMoney(round.admin_fee_amount || 0)}</b></div>
                     <div class="sl-stat-row"><span>Winner</span><b>${esc(round.winner_name || '-')}</b></div>
                     <div class="sl-stat-row"><span>Winning Ticket</span><b>${esc(round.winning_ticket_number || '-')}</b></div>
                 </div>
@@ -751,7 +785,7 @@
                         <div class="sl-history-row">
                             <div><b>${esc(e.user_name)}</b></div>
                             <div>Tickets: <b>${Number(e.ticket_count || 0)}</b></div>
-                            <div>Total Paid: <b>${fmtMoney(e.total_paid || 0)}</b></div>
+                            <div>Display Value: <b>${fmtMoney(e.total_paid || 0)}</b></div>
                             <div>User ID: ${Number(e.user_id || 0)}</div>
                         </div>
                     `).join('') : '<div class="sl-empty">No entrants yet</div>'}
@@ -759,6 +793,7 @@
             </div>
         `;
     }
+
 
     function getTabHtml(tab) {
         switch (tab) {
