@@ -1,8 +1,9 @@
 // ==UserScript==
 // @name         Torn Giveaway Overlay
 // @namespace    torn.giveaway.overlay
-// @version      1.0.0
-// @description  Giveaway overlay for Torn with entry requirement, reward, countdown, entrants, and winners.
+// @version      1.1.0
+// @description  Giveaway overlay for Torn with entry requirement, reward, countdown, entrants, winners, and admin controls.
+// @author       OpenAI
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
 // @grant        GM_getValue
@@ -10,13 +11,16 @@
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
 // @connect      *
+// @downloadURL  https://sinner-s-lottery.onrender.com/static/giveaway.user.js
+// @updateURL    https://sinner-s-lottery.onrender.com/static/giveaway.user.js
 // @run-at       document-end
 // ==/UserScript==
 
 (function () {
   'use strict';
 
-  const BASE_URL = (GM_getValue('giveaway_base_url', 'https://your-render-service.onrender.com') || '').replace(/\/$/, '');
+  const DEFAULT_BASE_URL = 'https://sinner-s-lottery.onrender.com';
+  const K_BASE_URL = 'giveaway_base_url';
   const K_API_KEY = 'giveaway_api_key';
   const K_SESSION = 'giveaway_session';
   const K_OVERLAY_OPEN = 'giveaway_overlay_open';
@@ -24,6 +28,17 @@
   const K_OVERLAY_POS = 'giveaway_overlay_pos';
   const K_ACTIVE_TAB = 'giveaway_active_tab';
   const K_REFRESH = 'giveaway_refresh_seconds';
+
+  function getBaseUrl() {
+    return String(getVal(K_BASE_URL, DEFAULT_BASE_URL) || DEFAULT_BASE_URL).replace(/\/$/, '');
+  }
+
+  function setBaseUrl(url) {
+    const clean = String(url || '').trim().replace(/\/$/, '');
+    if (!clean) return false;
+    setVal(K_BASE_URL, clean);
+    return true;
+  }
 
   let state = {
     user: null,
@@ -67,7 +82,7 @@
       if (token) headers['X-Session-Token'] = token;
       GM_xmlhttpRequest({
         method,
-        url: `${BASE_URL}${path}`,
+        url: `${getBaseUrl()}${path}`,
         headers,
         data: body ? JSON.stringify(body) : null,
         onload: (r) => {
@@ -109,6 +124,20 @@
     } catch (e) {
       showMsg(e.error || 'Login failed', true);
     }
+  }
+
+
+  async function tryAutoLogin() {
+    const token = getVal(K_SESSION, '');
+    if (token) return;
+    const apiKey = String(getVal(K_API_KEY, '') || '').trim();
+    if (!apiKey) return;
+    try {
+      const data = await req('/api/login', 'POST', { api_key: apiKey });
+      if (!data.ok) throw data;
+      setVal(K_SESSION, data.token || '');
+      state.user = data.user || null;
+    } catch (_) {}
   }
 
   async function logout() {
@@ -432,13 +461,18 @@
     return `
       <div class="gw-card">
         <div class="gw-grid">
-          <div><div class="gw-label">Backend URL</div><div class="gw-value">${esc(BASE_URL || '-')}</div></div>
+          <div><div class="gw-label">Backend URL</div><div class="gw-value">${esc(getBaseUrl() || '-')}</div></div>
           <div><div class="gw-label">Refresh</div><div class="gw-value">${getVal(K_REFRESH, 20)}s</div></div>
         </div>
         <div class="gw-spacer"></div>
         <div class="gw-grid">
           <div class="gw-btn" id="gw-login-btn">${state.user ? 'Re-Login' : 'Login'}</div>
           <div class="gw-btn" id="gw-logout-btn">Logout</div>
+        </div>
+        <div class="gw-spacer"></div>
+        <div class="gw-grid">
+          <div class="gw-btn" id="gw-set-url-btn">Set Backend URL</div>
+          <div class="gw-btn" id="gw-set-refresh-btn">Set Refresh</div>
         </div>
       </div>
     `;
@@ -449,6 +483,20 @@
     document.getElementById('gw-enter-btn')?.addEventListener('click', () => state.user ? enterGiveaway() : login());
     document.getElementById('gw-login-btn')?.addEventListener('click', login);
     document.getElementById('gw-logout-btn')?.addEventListener('click', logout);
+    document.getElementById('gw-set-url-btn')?.addEventListener('click', () => {
+      const next = prompt('Backend URL', getBaseUrl());
+      if (next === null) return;
+      if (!setBaseUrl(next)) return showMsg('Invalid backend URL', true);
+      showMsg('Backend URL updated');
+      refreshAll();
+    });
+    document.getElementById('gw-set-refresh-btn')?.addEventListener('click', () => {
+      const next = prompt('Refresh seconds', String(getVal(K_REFRESH, 20)));
+      if (next === null) return;
+      const n = Math.max(10, Number(next) || 20);
+      setVal(K_REFRESH, n);
+      showMsg(`Refresh set to ${n}s`);
+    });
     document.getElementById('gw-admin-save')?.addEventListener('click', adminSave);
     document.getElementById('gw-admin-open')?.addEventListener('click', () => adminStatus('open'));
     document.getElementById('gw-admin-close')?.addEventListener('click', () => adminStatus('closed'));
@@ -501,9 +549,10 @@
     setInterval(refreshAll, Math.max(10, Number(getVal(K_REFRESH, 20))) * 1000);
   }
 
-  function boot() {
+  async function boot() {
     ensureDom();
-    refreshAll();
+    await tryAutoLogin();
+    await refreshAll();
     startWatch();
   }
 
