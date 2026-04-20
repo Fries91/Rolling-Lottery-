@@ -66,21 +66,22 @@ def create_app() -> Flask:
             return fn(*args, **kwargs)
         return wrapper
 
-    def serialize_current(giveaway: dict | None, user_id: int | None = None):
+    def serialize_current(giveaway: dict | None, user_id: int | None = None, include_entrants: bool = False):
         if not giveaway:
             return {
                 'giveaway': None,
                 'counts': {'total_entries': 0, 'entrant_count': 0, 'my_entries': 0},
                 'entrants': [],
             }
-        entrants = db.get_entrants(giveaway['id'])
+        entrants = db.get_entrants(giveaway['id']) if include_entrants else []
         total_entries = db.count_entries(giveaway['id'])
+        entrant_count = len(db.get_entrants(giveaway['id']))
         my_entries = db.count_entries_for_user(giveaway['id'], user_id) if user_id else 0
         return {
             'giveaway': giveaway,
             'counts': {
                 'total_entries': total_entries,
-                'entrant_count': len(entrants),
+                'entrant_count': entrant_count,
                 'my_entries': my_entries,
             },
             'entrants': entrants,
@@ -146,7 +147,8 @@ def create_app() -> Flask:
         sess = session_from_request()
         giveaway = db.get_latest_giveaway(include_draft=True)
         user_id = int(sess['user_id']) if sess else None
-        return jsonify({'ok': True, **serialize_current(giveaway, user_id)})
+        include_entrants = bool(sess and str(sess.get('role')) == 'admin')
+        return jsonify({'ok': True, **serialize_current(giveaway, user_id, include_entrants=include_entrants)})
 
     @app.post('/api/giveaway/enter')
     @require_auth
@@ -156,13 +158,18 @@ def create_app() -> Flask:
             my_entries = db.add_entry(giveaway, request.session)
         except Exception as exc:
             return jsonify({'ok': False, 'error': str(exc)}), 400
-        payload = serialize_current(giveaway, int(request.session['user_id']))
+        payload = serialize_current(
+            giveaway,
+            int(request.session['user_id']),
+            include_entrants=bool(str(request.session.get('role')) == 'admin'),
+        )
         payload['ok'] = True
         payload['message'] = 'Entry added'
         payload['counts']['my_entries'] = my_entries
         return jsonify(payload)
 
     @app.get('/api/giveaway/entrants')
+    @require_admin
     def giveaway_entrants():
         giveaway = db.get_latest_giveaway(include_draft=True)
         if not giveaway:
