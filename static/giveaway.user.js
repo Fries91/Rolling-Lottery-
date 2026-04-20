@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Giveaway Overlay
 // @namespace    torn.giveaway.overlay
-// @version      1.3.4
+// @version      1.3.5
 // @description  Giveaway overlay for Torn with entry requirement, reward, countdown, entrants, winners, and admin controls.
 // @author       OpenAI
 // @match        https://www.torn.com/*
@@ -259,12 +259,12 @@
   }
 
   async function adminDraw() {
-    if (!confirm('Draw a winner now?')) return;
+    if (!confirm('Pick a winner for the current draw now?')) return;
     try {
       const current = state.current?.giveaway || {};
       const data = await req('/api/giveaway/admin/draw', 'POST', { id: current.id || 0 });
       if (!data.ok) throw data;
-      showMsg(`Winner: ${data.giveaway?.winner_name || 'Unknown'}`);
+      showMsg(`Winner picked: ${data.giveaway?.winner_name || 'Unknown'}`);
       await refreshAll();
     } catch (e) {
       showMsg(e.error || 'Draw failed', true);
@@ -503,6 +503,90 @@
     `;
   }
 
+  function adminTab() {
+    if (!state.user || state.user.role !== 'admin') {
+      return `<div class="gw-card"><div class="gw-value">Admin access only</div></div>`;
+    }
+    const g = state.current?.giveaway || {};
+    const c = state.current?.counts || { total_entries: 0, entrant_count: 0 };
+    const winnerName = g.winner_name || 'Not picked yet';
+    const winnerId = g.winner_user_id || 0;
+    const drawnAt = g.drawn_ts ? fmtTs(g.drawn_ts) : '-';
+
+    return `
+      <div class="gw-card">
+        <div class="gw-label">Giveaway Setup</div>
+        <div class="gw-spacer"></div>
+        <div class="gw-grid">
+          <div>
+            <div class="gw-label">Title</div>
+            <input class="gw-input" id="gw-admin-title" value="${esc(g.title || '')}" placeholder="Giveaway title" />
+          </div>
+          <div>
+            <div class="gw-label">Entry Requirement</div>
+            <input class="gw-input" id="gw-admin-entry" value="${esc(g.entry_requirement || '')}" placeholder="Entry requirement" />
+          </div>
+          <div>
+            <div class="gw-label">Reward</div>
+            <input class="gw-input" id="gw-admin-reward" value="${esc(g.reward || '')}" placeholder="Reward" />
+          </div>
+          <div>
+            <div class="gw-label">Max Entries</div>
+            <input class="gw-input" id="gw-admin-max" type="number" min="1" value="${Number(g.max_entries_per_user || 1)}" />
+          </div>
+          <div>
+            <div class="gw-label">Start</div>
+            <input class="gw-input" id="gw-admin-start" value="${g.start_ts ? new Date(g.start_ts * 1000).toISOString().slice(0,16).replace('T',' ') : ''}" placeholder="YYYY-MM-DD HH:MM" />
+          </div>
+          <div>
+            <div class="gw-label">End</div>
+            <input class="gw-input" id="gw-admin-end" value="${g.end_ts ? new Date(g.end_ts * 1000).toISOString().slice(0,16).replace('T',' ') : ''}" placeholder="YYYY-MM-DD HH:MM" />
+          </div>
+        </div>
+        <div class="gw-spacer"></div>
+        <div class="gw-grid">
+          <div class="gw-stat">
+            <div class="gw-stat-num">${esc(g.status || '-')}</div>
+            <div class="gw-stat-label">Status</div>
+          </div>
+          <div class="gw-stat">
+            <div class="gw-stat-num">${c.entrant_count}</div>
+            <div class="gw-stat-label">Entrants</div>
+          </div>
+          <div class="gw-stat">
+            <div class="gw-stat-num">${c.total_entries}</div>
+            <div class="gw-stat-label">Total Entries</div>
+          </div>
+          <div class="gw-stat">
+            <div class="gw-stat-num">${esc(drawnAt)}</div>
+            <div class="gw-stat-label">Draw Time</div>
+          </div>
+        </div>
+        <div class="gw-spacer"></div>
+        <div class="gw-grid">
+          <div class="gw-btn" id="gw-admin-save">Save</div>
+          <div class="gw-btn" id="gw-admin-open">Open</div>
+          <div class="gw-btn" id="gw-admin-close">Close</div>
+          <div class="gw-btn" id="gw-admin-pick">Pick Winner</div>
+        </div>
+      </div>
+
+      <div class="gw-card">
+        <div class="gw-label">Winner</div>
+        <div class="gw-spacer"></div>
+        <div class="gw-winner-top">
+          <div>
+            <div class="gw-value">${esc(winnerName)}</div>
+            <div class="gw-mini">${winnerId ? `Torn ID: ${winnerId}` : 'No winner picked yet'}</div>
+          </div>
+          <div class="gw-winner-badge">${g.status === 'drawn' ? 'Picked' : 'Waiting'}</div>
+        </div>
+        <div class="gw-spacer"></div>
+        ${winnerId ? `<a class="gw-btn gw-linkbtn" href="https://www.torn.com/profiles.php?XID=${winnerId}" target="_blank" rel="noopener noreferrer">Open Winner Profile</a>` : ''}
+      </div>
+    `;
+  }
+
   function winnersTab() {
     const g = state.current?.giveaway || {};
     const winnerName = g.winner_name || 'Not drawn yet';
@@ -639,9 +723,44 @@
       state.entrantSort = e.target.value || 'az';
       render();
     });
-    document.getElementById('gw-admin-save')?.addEventListener('click', adminSave);
+    document.getElementById('gw-admin-save')?.addEventListener('click', async () => {
+      if (!state.user || state.user.role !== 'admin') return showMsg('Admin access required', true);
+      const current = state.current?.giveaway || {};
+      const title = document.getElementById('gw-admin-title')?.value || '';
+      const entry_requirement = document.getElementById('gw-admin-entry')?.value || '';
+      const reward = document.getElementById('gw-admin-reward')?.value || '';
+      const maxEntries = document.getElementById('gw-admin-max')?.value || '1';
+      const startRaw = document.getElementById('gw-admin-start')?.value || '';
+      const endRaw = document.getElementById('gw-admin-end')?.value || '';
+
+      function parseLocal(value) {
+        if (!String(value).trim()) return 0;
+        const dt = new Date(String(value).replace(' ', 'T'));
+        return Number.isNaN(dt.getTime()) ? 0 : Math.floor(dt.getTime() / 1000);
+      }
+
+      try {
+        const data = await req('/api/giveaway/admin/save', 'POST', {
+          id: current.id || 0,
+          title,
+          entry_requirement,
+          reward,
+          rules: current.rules || '',
+          start_ts: parseLocal(startRaw),
+          end_ts: parseLocal(endRaw),
+          max_entries_per_user: Number(maxEntries) || 1,
+          status: current.status || 'closed',
+        });
+        if (!data.ok) throw data;
+        showMsg('Giveaway saved');
+        await refreshAll();
+      } catch (e) {
+        showMsg(e.error || 'Save failed', true);
+      }
+    });
     document.getElementById('gw-admin-open')?.addEventListener('click', () => adminStatus('open'));
     document.getElementById('gw-admin-close')?.addEventListener('click', () => adminStatus('closed'));
+    document.getElementById('gw-admin-pick')?.addEventListener('click', adminDraw);
   }
 
   function render() {
