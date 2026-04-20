@@ -1,9 +1,7 @@
-giveaway.user.js
-Copy everything inside the code block below and replace your full userscript.
 // ==UserScript==
 // @name         Torn Giveaway Overlay
 // @namespace    torn.giveaway.overlay
-// @version      1.1.2
+// @version      1.2.1
 // @description  Giveaway overlay for Torn with entry requirement, reward, countdown, entrants, winners, and admin controls.
 // @author       OpenAI
 // @match        https://www.torn.com/*
@@ -207,26 +205,22 @@ Copy everything inside the code block below and replace your full userscript.
   async function adminSave() {
     if (!state.user || state.user.role !== 'admin') return showMsg('Admin access required', true);
     const current = state.current?.giveaway || {};
-    const title = prompt('Giveaway title', current.title || '');
-    if (title === null) return;
-    const entry_requirement = prompt('Entry requirement', current.entry_requirement || '1 free entry');
-    if (entry_requirement === null) return;
-    const reward = prompt('Reward', current.reward || '');
-    if (reward === null) return;
-    const rules = prompt('Rules', current.rules || '');
-    if (rules === null) return;
-    const startRaw = prompt('Start date/time (example: 2026-04-20 18:00)', current.start_ts ? new Date(current.start_ts * 1000).toISOString().slice(0,16).replace('T',' ') : '');
-    if (startRaw === null) return;
-    const endRaw = prompt('End date/time (example: 2026-04-20 20:00)', current.end_ts ? new Date(current.end_ts * 1000).toISOString().slice(0,16).replace('T',' ') : '');
-    if (endRaw === null) return;
-    const maxEntries = prompt('Max entries per user', String(current.max_entries_per_user || 1));
-    if (maxEntries === null) return;
-    const status = prompt('Status: draft/open/closed/drawn', current.status || 'draft');
-    if (status === null) return;
+
+    const title = String(document.getElementById('gw-admin-title')?.value || '').trim();
+    const entry_requirement = String(document.getElementById('gw-admin-entry')?.value || '').trim();
+    const reward = String(document.getElementById('gw-admin-reward')?.value || '').trim();
+    const rules = String(current.rules || '').trim();
+    const startRaw = String(document.getElementById('gw-admin-start')?.value || '').trim();
+    const endRaw = String(document.getElementById('gw-admin-end')?.value || '').trim();
+    const maxEntries = Number(document.getElementById('gw-admin-max')?.value || current.max_entries_per_user || 1) || 1;
+    const status = String(document.getElementById('gw-admin-status')?.value || current.status || 'draft').trim();
+
+    if (!title) return showMsg('Enter a giveaway title', true);
+    if (!reward) return showMsg('Enter a reward', true);
 
     function parseLocal(value) {
       if (!value.trim()) return 0;
-      const dt = new Date(value.replace(' ', 'T'));
+      const dt = new Date(value);
       return Number.isNaN(dt.getTime()) ? 0 : Math.floor(dt.getTime() / 1000);
     }
 
@@ -234,13 +228,13 @@ Copy everything inside the code block below and replace your full userscript.
       const data = await req('/api/giveaway/admin/save', 'POST', {
         id: current.id || 0,
         title,
-        entry_requirement,
+        entry_requirement: entry_requirement || '1 free entry',
         reward,
         rules,
         start_ts: parseLocal(startRaw),
         end_ts: parseLocal(endRaw),
-        max_entries_per_user: Number(maxEntries) || 1,
-        status,
+        max_entries_per_user: Math.max(1, maxEntries),
+        status: status || 'draft',
       });
       if (!data.ok) throw data;
       showMsg('Giveaway saved');
@@ -278,7 +272,7 @@ Copy everything inside the code block below and replace your full userscript.
   function css() {
     return `
 #giveaway-shield{position:fixed;right:0;top:165px;transform:none;z-index:2147483647;width:120px;height:40px;border-radius:14px 0 0 14px;background:linear-gradient(180deg,#a51515 0%, #5e0d0d 100%);box-shadow:0 4px 14px rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:13px;cursor:pointer;user-select:none;letter-spacing:.5px;writing-mode:horizontal-tb;text-orientation:mixed;white-space:nowrap}
-#giveaway-overlay{position:fixed;right:78px;top:110px;width:min(420px,92vw);max-height:78vh;overflow:auto;z-index:2147483646;background:#111;border:1px solid #571818;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.6);color:#eee;font:14px/1.35 Arial,sans-serif}
+#giveaway-overlay{position:fixed;right:78px;top:110px;width:min(440px,92vw);max-height:78vh;overflow:auto;z-index:2147483646;background:#111;border:1px solid #571818;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.6);color:#eee;font:14px/1.35 Arial,sans-serif}
 #giveaway-overlay.hidden{display:none}
 .gw-head{position:sticky;top:0;background:linear-gradient(180deg,#2b0b0b,#120606);padding:10px 12px;border-bottom:1px solid #4e1717;display:flex;justify-content:space-between;align-items:center;z-index:2}
 .gw-title{font-size:16px;font-weight:800}
@@ -286,8 +280,12 @@ Copy everything inside the code block below and replace your full userscript.
 .gw-tabs{display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin-bottom:10px}
 .gw-tab,.gw-btn{background:#220b0b;color:#f2d7d7;border:1px solid #5a2020;border-radius:10px;padding:8px 9px;text-align:center;cursor:pointer}
 .gw-tab.active{background:#5a1717;color:#fff}
+.gw-btn.primary{background:#7c1717;color:#fff;border-color:#a82b2b;font-weight:800}
+.gw-btn.warn{background:#5b4110;border-color:#8d6720;color:#ffe2a2}
 .gw-card{background:#181818;border:1px solid #2e2e2e;border-radius:12px;padding:10px;margin-bottom:10px}
+.gw-hero{background:linear-gradient(180deg,#1f0c0c,#140909);border:1px solid #5f1f1f}
 .gw-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.gw-grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
 .gw-label{font-size:11px;color:#bfa1a1;text-transform:uppercase;letter-spacing:.08em}
 .gw-value{font-size:14px;font-weight:700;margin-top:2px;word-break:break-word}
 .gw-list{display:flex;flex-direction:column;gap:6px}
@@ -297,7 +295,24 @@ Copy everything inside the code block below and replace your full userscript.
 .gw-note.err{background:#2b1010;border:1px solid #7f2323;color:#ffc7c7}
 .gw-mini{font-size:12px;color:#b9b9b9}
 .gw-spacer{height:6px}
-@media (max-width:640px){#giveaway-overlay{right:4vw;left:4vw;width:auto;top:80px;max-height:82vh}.gw-tabs{grid-template-columns:repeat(3,1fr)}#giveaway-shield{right:0;top:145px;width:104px;height:36px;border-radius:12px 0 0 12px;font-size:12px}}
+.gw-hero-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px}
+.gw-hero-title{font-size:18px;font-weight:900;line-height:1.15}
+.gw-status-pill{display:inline-flex;align-items:center;justify-content:center;min-width:74px;padding:6px 10px;border-radius:999px;background:#2b1212;border:1px solid #6f2424;font-size:12px;font-weight:800;text-transform:uppercase}
+.gw-stat{background:#141414;border:1px solid #2a2a2a;border-radius:12px;padding:10px}
+.gw-stat .gw-value{font-size:16px}
+.gw-form{display:flex;flex-direction:column;gap:10px}
+.gw-field{display:flex;flex-direction:column;gap:5px}
+.gw-input,.gw-textarea,.gw-select{width:100%;box-sizing:border-box;background:#101010;border:1px solid #3a1a1a;border-radius:10px;color:#f3e6e6;padding:10px;font:14px Arial,sans-serif}
+.gw-textarea{min-height:86px;resize:vertical}
+.gw-actions{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.gw-actions-3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.gw-subtle{color:#c8b4b4;font-size:12px}
+@media (max-width:640px){
+  #giveaway-overlay{right:4vw;left:4vw;width:auto;top:80px;max-height:82vh}
+  .gw-tabs{grid-template-columns:repeat(3,1fr)}
+  .gw-grid,.gw-grid-3,.gw-actions,.gw-actions-3{grid-template-columns:1fr}
+  #giveaway-shield{right:0;top:145px;width:104px;height:36px;border-radius:12px 0 0 12px;font-size:12px}
+}
     `;
   }
 
@@ -383,18 +398,37 @@ Copy everything inside the code block below and replace your full userscript.
     const c = state.current?.counts || { total_entries: 0, entrant_count: 0, my_entries: 0 };
     if (!g) return `<div class="gw-card"><div class="gw-value">No giveaway created yet</div></div>`;
     return `
+      <div class="gw-card gw-hero">
+        <div class="gw-hero-top">
+          <div>
+            <div class="gw-label">Current Giveaway</div>
+            <div class="gw-hero-title">${esc(g.title || '-')}</div>
+          </div>
+          <div class="gw-status-pill">${esc(g.status || '-')}</div>
+        </div>
+        <div class="gw-grid-3">
+          <div class="gw-stat">
+            <div class="gw-label">Reward</div>
+            <div class="gw-value">${esc(g.reward || '-')}</div>
+          </div>
+          <div class="gw-stat">
+            <div class="gw-label">Countdown</div>
+            <div class="gw-value" id="gw-live-countdown">${esc(countdownText(g.end_ts))}</div>
+          </div>
+          <div class="gw-stat">
+            <div class="gw-label">Entrants</div>
+            <div class="gw-value">${c.entrant_count}</div>
+          </div>
+        </div>
+      </div>
       <div class="gw-card">
         <div class="gw-grid">
-          <div><div class="gw-label">Title</div><div class="gw-value">${esc(g.title || '-')}</div></div>
-          <div><div class="gw-label">Status</div><div class="gw-value">${esc(g.status || '-')}</div></div>
           <div><div class="gw-label">Entry Requirement</div><div class="gw-value">${esc(g.entry_requirement || '-')}</div></div>
-          <div><div class="gw-label">Reward</div><div class="gw-value">${esc(g.reward || '-')}</div></div>
           <div><div class="gw-label">Ends</div><div class="gw-value">${esc(fmtTs(g.end_ts))}</div></div>
-          <div><div class="gw-label">Countdown</div><div class="gw-value" id="gw-live-countdown">${esc(countdownText(g.end_ts))}</div></div>
-          <div><div class="gw-label">Entrants</div><div class="gw-value">${c.entrant_count}</div></div>
           <div><div class="gw-label">Total Entries</div><div class="gw-value">${c.total_entries}</div></div>
           <div><div class="gw-label">My Entries</div><div class="gw-value">${c.my_entries}</div></div>
           <div><div class="gw-label">Max Per User</div><div class="gw-value">${g.max_entries_per_user || 1}</div></div>
+          <div><div class="gw-label">Start</div><div class="gw-value">${esc(fmtTs(g.start_ts))}</div></div>
         </div>
       </div>
       <div class="gw-card">
@@ -403,7 +437,7 @@ Copy everything inside the code block below and replace your full userscript.
       </div>
       <div class="gw-card">
         <div class="gw-label">Rules</div>
-        <div class="gw-value">${esc(g.rules || 'No rules set')}</div>
+        <div class="gw-subtle">${esc(g.rules || 'No rules set')}</div>
       </div>
     `;
   }
@@ -454,21 +488,80 @@ Copy everything inside the code block below and replace your full userscript.
     if (!state.user || state.user.role !== 'admin') {
       return `<div class="gw-card"><div class="gw-value">Admin access only</div></div>`;
     }
+    const g = state.current?.giveaway || {};
+    const startValue = g.start_ts ? new Date(g.start_ts * 1000).toISOString().slice(0, 16) : '';
+    const endValue = g.end_ts ? new Date(g.end_ts * 1000).toISOString().slice(0, 16) : '';
+    const status = g.status || 'closed';
+    const winnerName = g.winner_name || 'No winner yet';
+    const winnerId = g.winner_user_id || 0;
+    const winnerProfileUrl = winnerId ? `https://www.torn.com/profiles.php?XID=${winnerId}` : '';
     return `
       <div class="gw-card">
-        <div class="gw-grid">
-          <div class="gw-btn" id="gw-admin-save">Create / Edit</div>
-          <div class="gw-btn" id="gw-admin-open">Open</div>
-          <div class="gw-btn" id="gw-admin-close">Close</div>
-          <div class="gw-btn" id="gw-admin-draft">Draft</div>
+        <div class="gw-label">Admin Setup</div>
+        <div class="gw-spacer"></div>
+        <div class="gw-form">
+          <div class="gw-field">
+            <label class="gw-label" for="gw-admin-title">Giveaway Title</label>
+            <input class="gw-input" id="gw-admin-title" type="text" value="${esc(g.title || '')}" placeholder="Weekly Giveaway">
+          </div>
+          <div class="gw-grid">
+            <div class="gw-field">
+              <label class="gw-label" for="gw-admin-entry">Entry Requirement</label>
+              <input class="gw-input" id="gw-admin-entry" type="text" value="${esc(g.entry_requirement || '1 free entry')}" placeholder="1 free entry">
+            </div>
+            <div class="gw-field">
+              <label class="gw-label" for="gw-admin-reward">Reward</label>
+              <input class="gw-input" id="gw-admin-reward" type="text" value="${esc(g.reward || '')}" placeholder="Prize item">
+            </div>
+          </div>
+          <div class="gw-grid">
+            <div class="gw-field">
+              <label class="gw-label" for="gw-admin-start">Start</label>
+              <input class="gw-input" id="gw-admin-start" type="datetime-local" value="${startValue}">
+            </div>
+            <div class="gw-field">
+              <label class="gw-label" for="gw-admin-end">End</label>
+              <input class="gw-input" id="gw-admin-end" type="datetime-local" value="${endValue}">
+            </div>
+          </div>
+          <div class="gw-grid">
+            <div class="gw-field">
+              <label class="gw-label" for="gw-admin-max">Max Entries Per User</label>
+              <input class="gw-input" id="gw-admin-max" type="number" min="1" step="1" value="${Number(g.max_entries_per_user || 1)}">
+            </div>
+            <div class="gw-field">
+              <label class="gw-label" for="gw-admin-status">Status</label>
+              <select class="gw-select" id="gw-admin-status">
+                <option value="open" ${status === 'open' ? 'selected' : ''}>Open</option>
+                <option value="closed" ${status === 'closed' ? 'selected' : ''}>Closed</option>
+                <option value="drawn" ${status === 'drawn' ? 'selected' : ''}>Drawn</option>
+              </select>
+            </div>
+          </div>
         </div>
         <div class="gw-spacer"></div>
-        <div class="gw-btn" id="gw-admin-draw">Draw Winner</div>
+        <div class="gw-actions">
+          <div class="gw-btn primary" id="gw-admin-save">Save Giveaway</div>
+          <div class="gw-btn warn" id="gw-admin-close">Close</div>
+          <div class="gw-btn" id="gw-admin-open">Open</div>
+        </div>
+      </div>
+
+      <div class="gw-card">
+        <div class="gw-label">Winner</div>
+        <div class="gw-value">${esc(winnerName)}</div>
+        <div class="gw-mini">${winnerId ? `User ID: ${winnerId}` : 'Draw a winner from the backend when ready.'}</div>
+        <div class="gw-spacer"></div>
+        ${winnerId ? `
+          <a class="gw-btn gw-link-btn" href="${winnerProfileUrl}" target="_blank" rel="noopener noreferrer">Open Winner Profile</a>
+        ` : `
+          <div class="gw-btn gw-btn-disabled">No winner link yet</div>
+        `}
       </div>
     `;
   }
 
-  function settingsTab() {
+  function settingsTab() { {
     return `
       <div class="gw-card">
         <div class="gw-grid">
@@ -511,8 +604,6 @@ Copy everything inside the code block below and replace your full userscript.
     document.getElementById('gw-admin-save')?.addEventListener('click', adminSave);
     document.getElementById('gw-admin-open')?.addEventListener('click', () => adminStatus('open'));
     document.getElementById('gw-admin-close')?.addEventListener('click', () => adminStatus('closed'));
-    document.getElementById('gw-admin-draft')?.addEventListener('click', () => adminStatus('draft'));
-    document.getElementById('gw-admin-draw')?.addEventListener('click', adminDraw);
   }
 
   function render() {
