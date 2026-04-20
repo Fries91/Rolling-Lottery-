@@ -13,6 +13,9 @@ def now_ts() -> int:
 
 
 def connect() -> sqlite3.Connection:
+    parent = os.path.dirname(DB_PATH)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
@@ -71,6 +74,7 @@ def init_db() -> None:
                 status TEXT NOT NULL DEFAULT 'draft',
                 winner_user_id INTEGER,
                 winner_name TEXT,
+                drawn_ts INTEGER NOT NULL DEFAULT 0,
                 created_by INTEGER,
                 created_by_name TEXT,
                 created_ts INTEGER NOT NULL,
@@ -103,6 +107,10 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_giveaway_winners_giveaway_id ON giveaway_winners(giveaway_id);
             """
         )
+        cur.execute("PRAGMA table_info(giveaways)")
+        giveaway_cols = {row["name"] for row in cur.fetchall()}
+        if "drawn_ts" not in giveaway_cols:
+            cur.execute("ALTER TABLE giveaways ADD COLUMN drawn_ts INTEGER NOT NULL DEFAULT 0")
 
 
 def mask_key(api_key: str) -> str:
@@ -204,10 +212,12 @@ def create_or_update_giveaway(payload: dict, actor: dict):
             cur.execute(
                 """
                 UPDATE giveaways
-                SET title=?, entry_requirement=?, reward=?, rules=?, start_ts=?, end_ts=?, max_entries_per_user=?, status=?, updated_ts=?
+                SET title=?, entry_requirement=?, reward=?, rules=?, start_ts=?, end_ts=?, max_entries_per_user=?, status=?,
+                    drawn_ts=CASE WHEN ?='drawn' THEN drawn_ts ELSE 0 END,
+                    updated_ts=?
                 WHERE id=?
                 """,
-                (title, entry_requirement, reward, rules, start_ts, end_ts, max_entries, status, ts, giveaway_id),
+                (title, entry_requirement, reward, rules, start_ts, end_ts, max_entries, status, status, ts, giveaway_id),
             )
         else:
             cur.execute(
@@ -232,8 +242,15 @@ def set_giveaway_status(giveaway_id: int, status: str):
     status = status.lower().strip()
     if status not in {'draft', 'open', 'closed', 'drawn'}:
         raise ValueError('invalid status')
+    ts = now_ts()
     with tx() as cur:
-        cur.execute("UPDATE giveaways SET status=?, updated_ts=? WHERE id=?", (status, now_ts(), giveaway_id))
+        if status == 'drawn':
+            cur.execute("UPDATE giveaways SET status=?, updated_ts=? WHERE id=?", (status, ts, giveaway_id))
+        else:
+            cur.execute(
+                "UPDATE giveaways SET status=?, winner_user_id=NULL, winner_name=NULL, drawn_ts=0, updated_ts=? WHERE id=?",
+                (status, ts, giveaway_id),
+            )
     return get_giveaway(giveaway_id)
 
 
@@ -301,8 +318,8 @@ def draw_winner(giveaway_id: int):
         winner = dict(random.choice(rows))
         ts = now_ts()
         cur.execute(
-            "UPDATE giveaways SET status='drawn', winner_user_id=?, winner_name=?, updated_ts=? WHERE id=?",
-            (winner['user_id'], winner['user_name'], ts, giveaway_id),
+            "UPDATE giveaways SET status='drawn', winner_user_id=?, winner_name=?, drawn_ts=?, updated_ts=? WHERE id=?",
+            (winner['user_id'], winner['user_name'], ts, ts, giveaway_id),
         )
         cur.execute(
             "INSERT INTO giveaway_winners (giveaway_id, user_id, user_name, reward, drawn_ts) VALUES (?, ?, ?, ?, ?)",
