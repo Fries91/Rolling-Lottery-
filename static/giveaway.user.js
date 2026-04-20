@@ -1,7 +1,9 @@
+giveaway.user.js
+Copy everything inside the code block below and replace your full userscript.
 // ==UserScript==
 // @name         Torn Giveaway Overlay
 // @namespace    torn.giveaway.overlay
-// @version      1.1.1
+// @version      1.1.2
 // @description  Giveaway overlay for Torn with entry requirement, reward, countdown, entrants, winners, and admin controls.
 // @author       OpenAI
 // @match        https://www.torn.com/*
@@ -28,6 +30,15 @@
   const K_OVERLAY_POS = 'giveaway_overlay_pos';
   const K_ACTIVE_TAB = 'giveaway_active_tab';
   const K_REFRESH = 'giveaway_refresh_seconds';
+
+  const APP_KEY = '__torn_giveaway_overlay_running__';
+  let watchStarted = false;
+  let ensureTimer = null;
+  let refreshTimer = null;
+
+  if (window[APP_KEY]) return;
+  window[APP_KEY] = true;
+
 
   function getBaseUrl() {
     return String(getVal(K_BASE_URL, DEFAULT_BASE_URL) || DEFAULT_BASE_URL).replace(/\/$/, '');
@@ -379,7 +390,7 @@
           <div><div class="gw-label">Entry Requirement</div><div class="gw-value">${esc(g.entry_requirement || '-')}</div></div>
           <div><div class="gw-label">Reward</div><div class="gw-value">${esc(g.reward || '-')}</div></div>
           <div><div class="gw-label">Ends</div><div class="gw-value">${esc(fmtTs(g.end_ts))}</div></div>
-          <div><div class="gw-label">Countdown</div><div class="gw-value">${esc(countdownText(g.end_ts))}</div></div>
+          <div><div class="gw-label">Countdown</div><div class="gw-value" id="gw-live-countdown">${esc(countdownText(g.end_ts))}</div></div>
           <div><div class="gw-label">Entrants</div><div class="gw-value">${c.entrant_count}</div></div>
           <div><div class="gw-label">Total Entries</div><div class="gw-value">${c.total_entries}</div></div>
           <div><div class="gw-label">My Entries</div><div class="gw-value">${c.my_entries}</div></div>
@@ -541,15 +552,28 @@
   }
 
   function startWatch() {
-    setInterval(() => {
+    if (watchStarted) return;
+    watchStarted = true;
+
+    ensureTimer = setInterval(() => {
       ensureDom();
       const g = state.current?.giveaway;
-      if (g && g.status === 'open') render();
+      const overlay = document.getElementById('giveaway-overlay');
+      if (g && g.status === 'open' && overlay && !overlay.classList.contains('hidden')) {
+        const countdownEl = document.getElementById('gw-live-countdown');
+        if (countdownEl) countdownEl.textContent = countdownText(g.end_ts);
+      }
     }, 1000);
-    setInterval(refreshAll, Math.max(10, Number(getVal(K_REFRESH, 20))) * 1000);
+
+    refreshTimer = setInterval(() => {
+      refreshAll();
+    }, Math.max(10, Number(getVal(K_REFRESH, 20))) * 1000);
   }
 
   async function boot() {
+    if (document.body?.dataset?.giveawayBooted === '1') return;
+    if (document.body) document.body.dataset.giveawayBooted = '1';
+
     ensureDom();
     await tryAutoLogin();
     await refreshAll();
