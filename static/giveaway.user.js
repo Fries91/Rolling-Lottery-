@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Giveaway Overlay
 // @namespace    torn.giveaway.overlay
-// @version      1.2.1
+// @version      1.3.0
 // @description  Giveaway overlay for Torn with entry requirement, reward, countdown, entrants, winners, and admin controls.
 // @author       OpenAI
 // @match        https://www.torn.com/*
@@ -307,10 +307,19 @@
 .gw-actions{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
 .gw-actions-3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
 .gw-subtle{color:#c8b4b4;font-size:12px}
+.gw-overview-hero{padding:12px 12px 14px}
+.gw-overview-main{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+.gw-overview-title{font-size:20px;font-weight:900;line-height:1.1;margin-top:4px}
+.gw-overview-countdown .gw-value{font-size:22px;line-height:1.05}
+.gw-overview-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px}
+.gw-highlight{border-color:#5e2020;background:linear-gradient(180deg,#211010,#151010)}
+.gw-enter-main{margin-top:10px}
+.gw-winner-big{font-size:18px;font-weight:900}
+.gw-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 @media (max-width:640px){
   #giveaway-overlay{right:4vw;left:4vw;width:auto;top:80px;max-height:82vh}
   .gw-tabs{grid-template-columns:repeat(3,1fr)}
-  .gw-grid,.gw-grid-3,.gw-actions,.gw-actions-3{grid-template-columns:1fr}
+  .gw-grid,.gw-grid-3,.gw-actions,.gw-actions-3,.gw-overview-stats,.gw-detail-grid{grid-template-columns:1fr}
   #giveaway-shield{right:0;top:145px;width:104px;height:36px;border-radius:12px 0 0 12px;font-size:12px}
 }
     `;
@@ -396,48 +405,50 @@
   function overviewTab() {
     const g = state.current?.giveaway;
     const c = state.current?.counts || { total_entries: 0, entrant_count: 0, my_entries: 0 };
+    const canEnter = !!g && g.status === 'open';
+    const loginLabel = state.user ? `Logged in as ${esc(state.user.user_name)}` : 'Login needed to enter';
     if (!g) return `<div class="gw-card"><div class="gw-value">No giveaway created yet</div></div>`;
     return `
-      <div class="gw-card gw-hero">
-        <div class="gw-hero-top">
+      <div class="gw-card gw-hero gw-overview-hero">
+        <div class="gw-overview-main">
           <div>
             <div class="gw-label">Current Giveaway</div>
-            <div class="gw-hero-title">${esc(g.title || '-')}</div>
+            <div class="gw-overview-title">${esc(g.title || '-')}</div>
+            <div class="gw-mini">${esc(loginLabel)}</div>
           </div>
           <div class="gw-status-pill">${esc(g.status || '-')}</div>
         </div>
-        <div class="gw-grid-3">
+        <div class="gw-grid" style="margin-bottom:8px;">
           <div class="gw-stat">
             <div class="gw-label">Reward</div>
             <div class="gw-value">${esc(g.reward || '-')}</div>
           </div>
-          <div class="gw-stat">
+          <div class="gw-stat gw-overview-countdown">
             <div class="gw-label">Countdown</div>
             <div class="gw-value" id="gw-live-countdown">${esc(countdownText(g.end_ts))}</div>
           </div>
-          <div class="gw-stat">
-            <div class="gw-label">Entrants</div>
-            <div class="gw-value">${c.entrant_count}</div>
-          </div>
         </div>
-      </div>
-      <div class="gw-card">
-        <div class="gw-grid">
-          <div><div class="gw-label">Entry Requirement</div><div class="gw-value">${esc(g.entry_requirement || '-')}</div></div>
-          <div><div class="gw-label">Ends</div><div class="gw-value">${esc(fmtTs(g.end_ts))}</div></div>
-          <div><div class="gw-label">Total Entries</div><div class="gw-value">${c.total_entries}</div></div>
-          <div><div class="gw-label">My Entries</div><div class="gw-value">${c.my_entries}</div></div>
-          <div><div class="gw-label">Max Per User</div><div class="gw-value">${g.max_entries_per_user || 1}</div></div>
-          <div><div class="gw-label">Start</div><div class="gw-value">${esc(fmtTs(g.start_ts))}</div></div>
+        <div class="gw-overview-stats">
+          <div class="gw-stat"><div class="gw-label">Entrants</div><div class="gw-value">${c.entrant_count}</div></div>
+          <div class="gw-stat"><div class="gw-label">Total Entries</div><div class="gw-value">${c.total_entries}</div></div>
+          <div class="gw-stat"><div class="gw-label">My Entries</div><div class="gw-value">${c.my_entries}</div></div>
+          <div class="gw-stat"><div class="gw-label">Max Per User</div><div class="gw-value">${g.max_entries_per_user || 1}</div></div>
         </div>
+        <div class="gw-btn primary gw-enter-main" id="gw-overview-enter-btn">${canEnter ? 'Enter Giveaway' : 'Giveaway Not Open'}</div>
       </div>
-      <div class="gw-card">
+      <div class="gw-card gw-highlight">
         <div class="gw-label">Winner</div>
-        <div class="gw-value">${esc(g.winner_name || 'Not drawn yet')}</div>
+        <div class="gw-winner-big">${esc(g.winner_name || 'Not drawn yet')}</div>
       </div>
       <div class="gw-card">
-        <div class="gw-label">Rules</div>
-        <div class="gw-subtle">${esc(g.rules || 'No rules set')}</div>
+        <div class="gw-label">Giveaway Details</div>
+        <div class="gw-spacer"></div>
+        <div class="gw-detail-grid">
+          <div><div class="gw-label">Entry Requirement</div><div class="gw-value">${esc(g.entry_requirement || '-')}</div></div>
+          <div><div class="gw-label">Start</div><div class="gw-value">${esc(fmtTs(g.start_ts))}</div></div>
+          <div><div class="gw-label">End</div><div class="gw-value">${esc(fmtTs(g.end_ts))}</div></div>
+          <div><div class="gw-label">Status</div><div class="gw-value">${esc(g.status || '-')}</div></div>
+        </div>
       </div>
     `;
   }
@@ -585,6 +596,11 @@
   function bindEvents() {
     document.querySelectorAll('.gw-tab').forEach(el => el.onclick = () => { setVal(K_ACTIVE_TAB, el.dataset.tab); render(); });
     document.getElementById('gw-enter-btn')?.addEventListener('click', () => state.user ? enterGiveaway() : login());
+    document.getElementById('gw-overview-enter-btn')?.addEventListener('click', () => {
+      const g = state.current?.giveaway;
+      if (!g || g.status !== 'open') return showMsg('Giveaway is not open', true);
+      return state.user ? enterGiveaway() : login();
+    });
     document.getElementById('gw-login-btn')?.addEventListener('click', login);
     document.getElementById('gw-logout-btn')?.addEventListener('click', logout);
     document.getElementById('gw-set-url-btn')?.addEventListener('click', () => {
