@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Giveaway Overlay
 // @namespace    torn.giveaway.overlay
-// @version      1.1.0
+// @version      1.1.1
 // @description  Giveaway overlay for Torn with entry requirement, reward, countdown, entrants, winners, and admin controls.
 // @author       OpenAI
 // @match        https://www.torn.com/*
@@ -266,7 +266,7 @@
 
   function css() {
     return `
-#giveaway-shield{position:fixed;right:14px;top:50%;transform:translateY(-50%);z-index:2147483647;width:58px;height:58px;border-radius:50%;background:radial-gradient(circle at 30% 30%, #ff6767, #8e1010 60%, #240000 100%);box-shadow:0 4px 14px rgba(0,0,0,.55);border:2px solid rgba(255,255,255,.18);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:13px;cursor:pointer;user-select:none}
+#giveaway-shield{position:fixed;right:0;top:165px;transform:none;z-index:2147483647;width:120px;height:40px;border-radius:14px 0 0 14px;background:linear-gradient(180deg,#a51515 0%, #5e0d0d 100%);box-shadow:0 4px 14px rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:13px;cursor:pointer;user-select:none;letter-spacing:.5px;writing-mode:horizontal-tb;text-orientation:mixed;white-space:nowrap}
 #giveaway-overlay{position:fixed;right:78px;top:110px;width:min(420px,92vw);max-height:78vh;overflow:auto;z-index:2147483646;background:#111;border:1px solid #571818;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.6);color:#eee;font:14px/1.35 Arial,sans-serif}
 #giveaway-overlay.hidden{display:none}
 .gw-head{position:sticky;top:0;background:linear-gradient(180deg,#2b0b0b,#120606);padding:10px 12px;border-bottom:1px solid #4e1717;display:flex;justify-content:space-between;align-items:center;z-index:2}
@@ -286,7 +286,7 @@
 .gw-note.err{background:#2b1010;border:1px solid #7f2323;color:#ffc7c7}
 .gw-mini{font-size:12px;color:#b9b9b9}
 .gw-spacer{height:6px}
-@media (max-width:640px){#giveaway-overlay{right:4vw;left:4vw;width:auto;top:80px;max-height:82vh}.gw-tabs{grid-template-columns:repeat(3,1fr)}#giveaway-shield{right:10px;width:54px;height:54px}}
+@media (max-width:640px){#giveaway-overlay{right:4vw;left:4vw;width:auto;top:80px;max-height:82vh}.gw-tabs{grid-template-columns:repeat(3,1fr)}#giveaway-shield{right:0;top:145px;width:104px;height:36px;border-radius:12px 0 0 12px;font-size:12px}}
     `;
   }
 
@@ -302,11 +302,11 @@
     if (!shield) {
       shield = document.createElement('div');
       shield.id = 'giveaway-shield';
-      shield.textContent = 'GW';
+      shield.textContent = 'GIVEAWAY';
       document.body.appendChild(shield);
       shield.addEventListener('click', toggleOverlay);
       makeDraggable(shield, K_SHIELD_POS);
-      applyStoredPos(shield, K_SHIELD_POS, { right: '14px', top: '50%' });
+      applyStoredPos(shield, K_SHIELD_POS, { right: '0', top: '165px', transform: 'none' });
     }
     let overlay = document.getElementById('giveaway-overlay');
     if (!overlay) {
