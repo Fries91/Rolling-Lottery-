@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Giveaway Overlay
 // @namespace    torn.giveaway.overlay
-// @version      1.3.0
+// @version      1.3.4
 // @description  Giveaway overlay for Torn with entry requirement, reward, countdown, entrants, winners, and admin controls.
 // @author       OpenAI
 // @match        https://www.torn.com/*
@@ -53,6 +53,8 @@
     user: null,
     current: null,
     history: [],
+    entrantSearch: '',
+    entrantSort: 'az',
     loading: false,
     message: '',
     error: '',
@@ -277,7 +279,7 @@
 .gw-head{position:sticky;top:0;background:linear-gradient(180deg,#2b0b0b,#120606);padding:10px 12px;border-bottom:1px solid #4e1717;display:flex;justify-content:space-between;align-items:center;z-index:2}
 .gw-title{font-size:16px;font-weight:800}
 .gw-body{padding:10px}
-.gw-tabs{display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin-bottom:10px}
+.gw-tabs{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-bottom:10px}
 .gw-tab,.gw-btn{background:#220b0b;color:#f2d7d7;border:1px solid #5a2020;border-radius:10px;padding:8px 9px;text-align:center;cursor:pointer}
 .gw-tab.active{background:#5a1717;color:#fff}
 .gw-btn.primary{background:#7c1717;color:#fff;border-color:#a82b2b;font-weight:800}
@@ -285,6 +287,7 @@
 .gw-card{background:#181818;border:1px solid #2e2e2e;border-radius:12px;padding:10px;margin-bottom:10px}
 .gw-hero{background:linear-gradient(180deg,#1f0c0c,#140909);border:1px solid #5f1f1f}
 .gw-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.gw-grid-entrants-tools{align-items:end}
 .gw-grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
 .gw-label{font-size:11px;color:#bfa1a1;text-transform:uppercase;letter-spacing:.08em}
 .gw-value{font-size:14px;font-weight:700;margin-top:2px;word-break:break-word}
@@ -453,141 +456,155 @@
     `;
   }
 
-  function enterTab() {
-    const g = state.current?.giveaway;
-    const c = state.current?.counts || { my_entries: 0 };
-    return `
-      <div class="gw-card">
-        <div class="gw-label">Your Status</div>
-        <div class="gw-value">${state.user ? `Logged in as ${esc(state.user.user_name)}` : 'Not logged in'}</div>
-        <div class="gw-spacer"></div>
-        <div class="gw-mini">Entries used: ${c.my_entries} / ${(g && g.max_entries_per_user) || 1}</div>
-      </div>
-      <div class="gw-card">
-        <div class="gw-label">Entry Requirement</div>
-        <div class="gw-value">${esc(g?.entry_requirement || '-')}</div>
-        <div class="gw-spacer"></div>
-        <div class="gw-btn" id="gw-enter-btn">Enter Giveaway</div>
-      </div>
-    `;
-  }
 
   function entrantsTab() {
-    const entrants = state.current?.entrants || [];
+    if (!state.user || state.user.role !== 'admin') {
+      return `<div class="gw-card"><div class="gw-value">Admin access only</div></div>`;
+    }
+    const rawEntrants = Array.isArray(state.current?.entrants) ? [...state.current.entrants] : [];
+    const search = String(state.entrantSearch || '').trim().toLowerCase();
+    const sort = state.entrantSort || 'az';
+    const entrants = rawEntrants
+      .filter(e => !search || String(e.user_name || '').toLowerCase().includes(search) || String(e.user_id || '').includes(search))
+      .sort((a, b) => {
+        if (sort === 'entries_desc') return Number(b.entries || 0) - Number(a.entries || 0) || String(a.user_name || '').localeCompare(String(b.user_name || ''));
+        if (sort === 'entries_asc') return Number(a.entries || 0) - Number(b.entries || 0) || String(a.user_name || '').localeCompare(String(b.user_name || ''));
+        return String(a.user_name || '').localeCompare(String(b.user_name || ''));
+      });
+
     return `
+      <div class="gw-card">
+        <div class="gw-grid gw-grid-entrants-tools">
+          <div class="gw-field">
+            <label class="gw-label" for="gw-entrant-search">Search</label>
+            <input class="gw-input" id="gw-entrant-search" type="text" value="${esc(state.entrantSearch || '')}" placeholder="Name or ID">
+          </div>
+          <div class="gw-field">
+            <label class="gw-label" for="gw-entrant-sort">Sort</label>
+            <select class="gw-select" id="gw-entrant-sort">
+              <option value="az" ${sort === 'az' ? 'selected' : ''}>A-Z</option>
+              <option value="entries_desc" ${sort === 'entries_desc' ? 'selected' : ''}>Most Entries</option>
+              <option value="entries_asc" ${sort === 'entries_asc' ? 'selected' : ''}>Least Entries</option>
+            </select>
+          </div>
+        </div>
+        <div class="gw-spacer"></div>
+        <div class="gw-grid">
+          <div><div class="gw-label">Visible Entrants</div><div class="gw-value">${entrants.length}</div></div>
+          <div><div class="gw-label">Total Entrants</div><div class="gw-value">${rawEntrants.length}</div></div>
+        </div>
+      </div>
       <div class="gw-card">
         <div class="gw-label">Entrants</div>
         <div class="gw-list">
-          ${entrants.length ? entrants.map(e => `<div class="gw-row"><div>${esc(e.user_name)} <span class="gw-mini">[${e.user_id}]</span></div><div>${e.entries} entry</div></div>`).join('') : '<div class="gw-row"><div>No entrants yet</div></div>'}
+          ${entrants.length ? entrants.map(e => `<div class="gw-row"><div><b>${esc(e.user_name)}</b> <span class="gw-mini">[${e.user_id}]</span></div><div>${Number(e.entries || 0)} ${Number(e.entries || 0) === 1 ? 'entry' : 'entries'}</div></div>`).join('') : '<div class="gw-row"><div>No matching entrants</div></div>'}
         </div>
       </div>
     `;
   }
 
   function winnersTab() {
+    const g = state.current?.giveaway || {};
+    const winnerName = g.winner_name || 'Not drawn yet';
+    const winnerId = g.winner_user_id || 0;
+    const drawnAt = g.drawn_ts ? fmtTs(g.drawn_ts) : '-';
     return `
+      <div class="gw-card gw-hero">
+        <div class="gw-winner-top">
+          <div>
+            <div class="gw-label">Current Winner</div>
+            <div class="gw-countdown-big">${esc(winnerName)}</div>
+            <div class="gw-mini">${winnerId ? `Torn ID: ${winnerId}` : 'No winner selected yet'}</div>
+          </div>
+          <div class="gw-winner-badge">${g.status === 'drawn' ? 'Drawn' : 'Pending'}</div>
+        </div>
+        <div class="gw-spacer"></div>
+        <div class="gw-grid">
+          <div class="gw-stat">
+            <div class="gw-stat-num">${esc(g.reward || '-')}</div>
+            <div class="gw-stat-label">Reward</div>
+          </div>
+          <div class="gw-stat">
+            <div class="gw-stat-num">${esc(drawnAt)}</div>
+            <div class="gw-stat-label">Draw Time</div>
+          </div>
+        </div>
+      </div>
       <div class="gw-card">
         <div class="gw-label">Winner History</div>
+        <div class="gw-spacer"></div>
         <div class="gw-list">
-          ${state.history.length ? state.history.map(h => `<div class="gw-row"><div><b>${esc(h.user_name)}</b><div class="gw-mini">${esc(h.title || 'Giveaway')}</div></div><div>${esc(h.reward || '-')}</div></div>`).join('') : '<div class="gw-row"><div>No winners yet</div></div>'}
+          ${state.history.length ? state.history.map(h => `
+            <div class="gw-history-row">
+              <div class="gw-history-main">
+                <div class="gw-history-name">${esc(h.user_name || 'Unknown')}</div>
+                <div class="gw-mini">${esc(h.title || 'Giveaway')}</div>
+                <div class="gw-mini">${esc(h.drawn_ts ? fmtTs(h.drawn_ts) : '-')}</div>
+              </div>
+              <div class="gw-history-reward">${esc(h.reward || '-')}</div>
+            </div>
+          `).join('') : '<div class="gw-empty">No winners yet</div>'}
         </div>
       </div>
     `;
   }
 
-  function adminTab() {
-    if (!state.user || state.user.role !== 'admin') {
-      return `<div class="gw-card"><div class="gw-value">Admin access only</div></div>`;
-    }
-    const g = state.current?.giveaway || {};
-    const startValue = g.start_ts ? new Date(g.start_ts * 1000).toISOString().slice(0, 16) : '';
-    const endValue = g.end_ts ? new Date(g.end_ts * 1000).toISOString().slice(0, 16) : '';
-    const status = g.status || 'closed';
-    const winnerName = g.winner_name || 'No winner yet';
-    const winnerId = g.winner_user_id || 0;
-    const winnerProfileUrl = winnerId ? `https://www.torn.com/profiles.php?XID=${winnerId}` : '';
+  function settingsTab() {
+    const apiKeySaved = String(getVal(K_API_KEY, '') || '').trim();
     return `
       <div class="gw-card">
-        <div class="gw-label">Admin Setup</div>
+        <div class="gw-label">Account</div>
         <div class="gw-spacer"></div>
-        <div class="gw-form">
-          <div class="gw-field">
-            <label class="gw-label" for="gw-admin-title">Giveaway Title</label>
-            <input class="gw-input" id="gw-admin-title" type="text" value="${esc(g.title || '')}" placeholder="Weekly Giveaway">
-          </div>
-          <div class="gw-grid">
-            <div class="gw-field">
-              <label class="gw-label" for="gw-admin-entry">Entry Requirement</label>
-              <input class="gw-input" id="gw-admin-entry" type="text" value="${esc(g.entry_requirement || '1 free entry')}" placeholder="1 free entry">
-            </div>
-            <div class="gw-field">
-              <label class="gw-label" for="gw-admin-reward">Reward</label>
-              <input class="gw-input" id="gw-admin-reward" type="text" value="${esc(g.reward || '')}" placeholder="Prize item">
-            </div>
-          </div>
-          <div class="gw-grid">
-            <div class="gw-field">
-              <label class="gw-label" for="gw-admin-start">Start</label>
-              <input class="gw-input" id="gw-admin-start" type="datetime-local" value="${startValue}">
-            </div>
-            <div class="gw-field">
-              <label class="gw-label" for="gw-admin-end">End</label>
-              <input class="gw-input" id="gw-admin-end" type="datetime-local" value="${endValue}">
-            </div>
-          </div>
-          <div class="gw-grid">
-            <div class="gw-field">
-              <label class="gw-label" for="gw-admin-max">Max Entries Per User</label>
-              <input class="gw-input" id="gw-admin-max" type="number" min="1" step="1" value="${Number(g.max_entries_per_user || 1)}">
-            </div>
-            <div class="gw-field">
-              <label class="gw-label" for="gw-admin-status">Status</label>
-              <select class="gw-select" id="gw-admin-status">
-                <option value="open" ${status === 'open' ? 'selected' : ''}>Open</option>
-                <option value="closed" ${status === 'closed' ? 'selected' : ''}>Closed</option>
-                <option value="drawn" ${status === 'drawn' ? 'selected' : ''}>Drawn</option>
-              </select>
-            </div>
-          </div>
-        </div>
-        <div class="gw-spacer"></div>
-        <div class="gw-actions">
-          <div class="gw-btn primary" id="gw-admin-save">Save Giveaway</div>
-          <div class="gw-btn warn" id="gw-admin-close">Close</div>
-          <div class="gw-btn" id="gw-admin-open">Open</div>
-        </div>
-      </div>
-
-      <div class="gw-card">
-        <div class="gw-label">Winner</div>
-        <div class="gw-value">${esc(winnerName)}</div>
-        <div class="gw-mini">${winnerId ? `User ID: ${winnerId}` : 'Draw a winner from the backend when ready.'}</div>
-        <div class="gw-spacer"></div>
-        ${winnerId ? `
-          <a class="gw-btn gw-link-btn" href="${winnerProfileUrl}" target="_blank" rel="noopener noreferrer">Open Winner Profile</a>
-        ` : `
-          <div class="gw-btn gw-btn-disabled">No winner link yet</div>
-        `}
-      </div>
-    `;
-  }
-
-  function settingsTab() { {
-    return `
-      <div class="gw-card">
         <div class="gw-grid">
-          <div><div class="gw-label">Backend URL</div><div class="gw-value">${esc(getBaseUrl() || '-')}</div></div>
-          <div><div class="gw-label">Refresh</div><div class="gw-value">${getVal(K_REFRESH, 20)}s</div></div>
+          <div class="gw-info-box">
+            <div class="gw-label">Logged In As</div>
+            <div class="gw-value">${state.user ? esc(state.user.user_name || '-') : 'Not logged in'}</div>
+          </div>
+          <div class="gw-info-box">
+            <div class="gw-label">Role</div>
+            <div class="gw-value">${state.user ? esc(state.user.role || 'user') : '-'}</div>
+          </div>
         </div>
         <div class="gw-spacer"></div>
         <div class="gw-grid">
           <div class="gw-btn" id="gw-login-btn">${state.user ? 'Re-Login' : 'Login'}</div>
           <div class="gw-btn" id="gw-logout-btn">Logout</div>
         </div>
+      </div>
+
+      <div class="gw-card">
+        <div class="gw-label">Storage</div>
         <div class="gw-spacer"></div>
         <div class="gw-grid">
-          <div class="gw-btn" id="gw-set-url-btn">Set Backend URL</div>
-          <div class="gw-btn" id="gw-set-refresh-btn">Set Refresh</div>
+          <div class="gw-info-box">
+            <div class="gw-label">API Key Saved</div>
+            <div class="gw-value">${apiKeySaved ? 'Yes' : 'No'}</div>
+          </div>
+          <div class="gw-info-box">
+            <div class="gw-label">Session Saved</div>
+            <div class="gw-value">${getVal(K_SESSION, '') ? 'Yes' : 'No'}</div>
+          </div>
+        </div>
+        <div class="gw-spacer"></div>
+        <div class="gw-grid">
+          <div class="gw-btn" id="gw-clear-session-btn">Clear Session</div>
+          <div class="gw-btn" id="gw-clear-apikey-btn">Clear API Key</div>
+        </div>
+      </div>
+
+      <div class="gw-card">
+        <div class="gw-label">ToS</div>
+        <div class="gw-spacer"></div>
+        <div class="gw-tos">
+          This overlay should be used in line with Torn's rules and API terms. Use your own API key only. Do not share your API key with other players. The script stores your API key and session locally in your userscript storage on your device so it can log you in and keep the overlay working. This script should only use your key for giveaway login and related giveaway data requests.
+        </div>
+      </div>
+
+      <div class="gw-card">
+        <div class="gw-label">API Key Storage & Use</div>
+        <div class="gw-spacer"></div>
+        <div class="gw-tos">
+          Your API key is saved locally in userscript storage on your device, not shown openly in the overlay, and reused for login when needed. Your saved session token is also stored locally to reduce repeated logins. Clear either one anytime using the storage buttons above.
         </div>
       </div>
     `;
@@ -603,19 +620,24 @@
     });
     document.getElementById('gw-login-btn')?.addEventListener('click', login);
     document.getElementById('gw-logout-btn')?.addEventListener('click', logout);
-    document.getElementById('gw-set-url-btn')?.addEventListener('click', () => {
-      const next = prompt('Backend URL', getBaseUrl());
-      if (next === null) return;
-      if (!setBaseUrl(next)) return showMsg('Invalid backend URL', true);
-      showMsg('Backend URL updated');
+    document.getElementById('gw-clear-session-btn')?.addEventListener('click', () => {
+      setVal(K_SESSION, '');
+      state.user = null;
+      showMsg('Saved session cleared');
       refreshAll();
     });
-    document.getElementById('gw-set-refresh-btn')?.addEventListener('click', () => {
-      const next = prompt('Refresh seconds', String(getVal(K_REFRESH, 20)));
-      if (next === null) return;
-      const n = Math.max(10, Number(next) || 20);
-      setVal(K_REFRESH, n);
-      showMsg(`Refresh set to ${n}s`);
+    document.getElementById('gw-clear-apikey-btn')?.addEventListener('click', () => {
+      setVal(K_API_KEY, '');
+      showMsg('Saved API key cleared');
+      render();
+    });
+    document.getElementById('gw-entrant-search')?.addEventListener('input', (e) => {
+      state.entrantSearch = e.target.value || '';
+      render();
+    });
+    document.getElementById('gw-entrant-sort')?.addEventListener('change', (e) => {
+      state.entrantSort = e.target.value || 'az';
+      render();
     });
     document.getElementById('gw-admin-save')?.addEventListener('click', adminSave);
     document.getElementById('gw-admin-open')?.addEventListener('click', () => adminStatus('open'));
@@ -625,10 +647,13 @@
   function render() {
     const overlay = document.getElementById('giveaway-overlay');
     if (!overlay) return;
-    const tab = getVal(K_ACTIVE_TAB, 'overview');
+    let tab = getVal(K_ACTIVE_TAB, 'overview');
+    if (tab === 'entrants' && (!state.user || state.user.role !== 'admin')) {
+      tab = 'overview';
+      setVal(K_ACTIVE_TAB, 'overview');
+    }
     const body = {
       overview: overviewTab,
-      enter: enterTab,
       entrants: entrantsTab,
       winners: winnersTab,
       admin: adminTab,
@@ -646,7 +671,7 @@
         <div class="gw-tabs">
           ${tabBtn('overview', 'Overview')}
           ${tabBtn('enter', 'Enter')}
-          ${tabBtn('entrants', 'Entrants')}
+          ${state.user && state.user.role === 'admin' ? tabBtn('entrants', 'Entrants') : ''}
           ${tabBtn('winners', 'Winners')}
           ${tabBtn('admin', 'Admin')}
           ${tabBtn('settings', 'Settings')}
