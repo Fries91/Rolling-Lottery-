@@ -1,10 +1,11 @@
 import os
+import random
 import sqlite3
 import threading
 import time
 from contextlib import contextmanager
 
-DB_PATH = os.environ.get("GIVEAWAY_DB_PATH", "giveaway.db")
+DB_PATH = os.environ.get('GIVEAWAY_DB_PATH', 'giveaway.db')
 _lock = threading.RLock()
 
 
@@ -18,8 +19,8 @@ def connect() -> sqlite3.Connection:
         os.makedirs(parent, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.execute('PRAGMA foreign_keys=ON')
     return conn
 
 
@@ -107,10 +108,10 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_giveaway_winners_giveaway_id ON giveaway_winners(giveaway_id);
             """
         )
-        cur.execute("PRAGMA table_info(giveaways)")
-        giveaway_cols = {row["name"] for row in cur.fetchall()}
-        if "drawn_ts" not in giveaway_cols:
-            cur.execute("ALTER TABLE giveaways ADD COLUMN drawn_ts INTEGER NOT NULL DEFAULT 0")
+        cur.execute('PRAGMA table_info(giveaways)')
+        giveaway_cols = {row['name'] for row in cur.fetchall()}
+        if 'drawn_ts' not in giveaway_cols:
+            cur.execute('ALTER TABLE giveaways ADD COLUMN drawn_ts INTEGER NOT NULL DEFAULT 0')
 
 
 def mask_key(api_key: str) -> str:
@@ -143,7 +144,7 @@ def create_session(token: str, user_id: int, user_name: str, ttl_seconds: int) -
     ts = now_ts()
     with tx() as cur:
         cur.execute(
-            "INSERT INTO sessions (token, user_id, user_name, created_ts, expires_ts) VALUES (?, ?, ?, ?, ?)",
+            'INSERT INTO sessions (token, user_id, user_name, created_ts, expires_ts) VALUES (?, ?, ?, ?, ?)',
             (token, user_id, user_name, ts, ts + ttl_seconds),
         )
 
@@ -153,33 +154,33 @@ def get_session(token: str):
         return None
     with tx() as cur:
         cur.execute(
-            "SELECT s.token, s.user_id, s.user_name, s.created_ts, s.expires_ts, u.role FROM sessions s LEFT JOIN users u ON u.user_id=s.user_id WHERE s.token=?",
+            'SELECT s.token, s.user_id, s.user_name, s.created_ts, s.expires_ts, u.role FROM sessions s LEFT JOIN users u ON u.user_id=s.user_id WHERE s.token=?',
             (token,),
         )
         row = cur.fetchone()
         if not row:
             return None
         if int(row['expires_ts']) < now_ts():
-            cur.execute("DELETE FROM sessions WHERE token=?", (token,))
+            cur.execute('DELETE FROM sessions WHERE token=?', (token,))
             return None
         return dict(row)
 
 
 def delete_session(token: str) -> None:
     with tx() as cur:
-        cur.execute("DELETE FROM sessions WHERE token=?", (token,))
+        cur.execute('DELETE FROM sessions WHERE token=?', (token,))
 
 
 def cleanup_sessions() -> None:
     with tx() as cur:
-        cur.execute("DELETE FROM sessions WHERE expires_ts < ?", (now_ts(),))
+        cur.execute('DELETE FROM sessions WHERE expires_ts < ?', (now_ts(),))
 
 
 def get_latest_giveaway(include_draft: bool = True):
-    q = "SELECT * FROM giveaways"
+    q = 'SELECT * FROM giveaways'
     if not include_draft:
         q += " WHERE status != 'draft'"
-    q += " ORDER BY id DESC LIMIT 1"
+    q += ' ORDER BY id DESC LIMIT 1'
     with tx() as cur:
         cur.execute(q)
         row = cur.fetchone()
@@ -188,7 +189,7 @@ def get_latest_giveaway(include_draft: bool = True):
 
 def get_giveaway(giveaway_id: int):
     with tx() as cur:
-        cur.execute("SELECT * FROM giveaways WHERE id=?", (giveaway_id,))
+        cur.execute('SELECT * FROM giveaways WHERE id=?', (giveaway_id,))
         row = cur.fetchone()
         return dict(row) if row else None
 
@@ -204,6 +205,13 @@ def create_or_update_giveaway(payload: dict, actor: dict):
     end_ts = int(payload.get('end_ts') or 0)
     max_entries = max(1, min(100, int(payload.get('max_entries_per_user') or 1)))
     status = str(payload.get('status') or 'draft').strip().lower()
+
+    if not title:
+        raise ValueError('Giveaway title is required')
+    if not reward:
+        raise ValueError('Reward is required')
+    if start_ts and end_ts and end_ts <= start_ts:
+        raise ValueError('End time must be after start time')
     if status not in {'draft', 'open', 'closed', 'drawn'}:
         status = 'draft'
 
@@ -212,7 +220,8 @@ def create_or_update_giveaway(payload: dict, actor: dict):
             cur.execute(
                 """
                 UPDATE giveaways
-                SET title=?, entry_requirement=?, reward=?, rules=?, start_ts=?, end_ts=?, max_entries_per_user=?, status=?,
+                SET title=?, entry_requirement=?, reward=?, rules=?, start_ts=?, end_ts=?,
+                    max_entries_per_user=?, status=?,
                     drawn_ts=CASE WHEN ?='drawn' THEN drawn_ts ELSE 0 END,
                     updated_ts=?
                 WHERE id=?
@@ -229,9 +238,18 @@ def create_or_update_giveaway(payload: dict, actor: dict):
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    title, entry_requirement, reward, rules,
-                    start_ts, end_ts, max_entries, status,
-                    actor['user_id'], actor['user_name'], ts, ts,
+                    title,
+                    entry_requirement,
+                    reward,
+                    rules,
+                    start_ts,
+                    end_ts,
+                    max_entries,
+                    status,
+                    actor['user_id'],
+                    actor['user_name'],
+                    ts,
+                    ts,
                 ),
             )
             giveaway_id = cur.lastrowid
@@ -242,10 +260,15 @@ def set_giveaway_status(giveaway_id: int, status: str):
     status = status.lower().strip()
     if status not in {'draft', 'open', 'closed', 'drawn'}:
         raise ValueError('invalid status')
+
+    giveaway = get_giveaway(giveaway_id)
+    if not giveaway:
+        raise ValueError('Giveaway not found')
+
     ts = now_ts()
     with tx() as cur:
         if status == 'drawn':
-            cur.execute("UPDATE giveaways SET status=?, updated_ts=? WHERE id=?", (status, ts, giveaway_id))
+            cur.execute('UPDATE giveaways SET status=?, updated_ts=? WHERE id=?', (status, ts, giveaway_id))
         else:
             cur.execute(
                 "UPDATE giveaways SET status=?, winner_user_id=NULL, winner_name=NULL, drawn_ts=0, updated_ts=? WHERE id=?",
@@ -256,23 +279,48 @@ def set_giveaway_status(giveaway_id: int, status: str):
 
 def count_entries_for_user(giveaway_id: int, user_id: int) -> int:
     with tx() as cur:
-        cur.execute("SELECT COUNT(*) AS c FROM giveaway_entries WHERE giveaway_id=? AND user_id=?", (giveaway_id, user_id))
+        cur.execute(
+            'SELECT COUNT(*) AS c FROM giveaway_entries WHERE giveaway_id=? AND user_id=?',
+            (giveaway_id, user_id),
+        )
         row = cur.fetchone()
         return int(row['c'] or 0)
 
 
 def count_entries(giveaway_id: int) -> int:
     with tx() as cur:
-        cur.execute("SELECT COUNT(*) AS c FROM giveaway_entries WHERE giveaway_id=?", (giveaway_id,))
+        cur.execute('SELECT COUNT(*) AS c FROM giveaway_entries WHERE giveaway_id=?', (giveaway_id,))
         row = cur.fetchone()
         return int(row['c'] or 0)
 
 
-def get_entrants(giveaway_id: int, limit: int = 500):
+def count_distinct_entrants(giveaway_id: int) -> int:
     with tx() as cur:
         cur.execute(
-            "SELECT user_id, user_name, MIN(entered_ts) AS first_entered_ts, COUNT(*) AS entries FROM giveaway_entries WHERE giveaway_id=? GROUP BY user_id, user_name ORDER BY first_entered_ts ASC, user_name ASC LIMIT ?",
+            'SELECT COUNT(DISTINCT user_id) AS c FROM giveaway_entries WHERE giveaway_id=?',
+            (giveaway_id,),
+        )
+        row = cur.fetchone()
+        return int(row['c'] or 0)
+
+
+def get_entrants(giveaway_id: int, limit: int = 1000):
+    with tx() as cur:
+        cur.execute(
+            "SELECT user_id, user_name, MIN(entered_ts) AS first_entered_ts, COUNT(*) AS entries "
+            "FROM giveaway_entries WHERE giveaway_id=? "
+            "GROUP BY user_id, user_name "
+            "ORDER BY first_entered_ts ASC, user_name ASC LIMIT ?",
             (giveaway_id, limit),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_weighted_entries(giveaway_id: int):
+    with tx() as cur:
+        cur.execute(
+            'SELECT user_id, user_name FROM giveaway_entries WHERE giveaway_id=? ORDER BY id ASC',
+            (giveaway_id,),
         )
         return [dict(r) for r in cur.fetchall()]
 
@@ -280,6 +328,7 @@ def get_entrants(giveaway_id: int, limit: int = 500):
 def add_entry(giveaway: dict, actor: dict):
     if not giveaway:
         raise ValueError('No active giveaway')
+
     now = now_ts()
     if giveaway['status'] != 'open':
         raise ValueError('Giveaway is not open')
@@ -295,43 +344,44 @@ def add_entry(giveaway: dict, actor: dict):
 
     with tx() as cur:
         cur.execute(
-            "INSERT INTO giveaway_entries (giveaway_id, user_id, user_name, entered_ts) VALUES (?, ?, ?, ?)",
+            'INSERT INTO giveaway_entries (giveaway_id, user_id, user_name, entered_ts) VALUES (?, ?, ?, ?)',
             (giveaway['id'], actor['user_id'], actor['user_name'], now),
         )
+
     return count_entries_for_user(giveaway['id'], actor['user_id'])
 
 
 def draw_winner(giveaway_id: int):
-    import random
-
     giveaway = get_giveaway(giveaway_id)
     if not giveaway:
         raise ValueError('Giveaway not found')
     if giveaway['status'] not in {'open', 'closed'}:
         raise ValueError('Giveaway must be open or closed before drawing')
 
+    rows = get_weighted_entries(giveaway_id)
+    if not rows:
+        raise ValueError('No entries to draw from')
+
+    winner = dict(random.choice(rows))
+    ts = now_ts()
+
     with tx() as cur:
-        cur.execute("SELECT user_id, user_name FROM giveaway_entries WHERE giveaway_id=? ORDER BY id ASC", (giveaway_id,))
-        rows = cur.fetchall()
-        if not rows:
-            raise ValueError('No entries to draw from')
-        winner = dict(random.choice(rows))
-        ts = now_ts()
         cur.execute(
             "UPDATE giveaways SET status='drawn', winner_user_id=?, winner_name=?, drawn_ts=?, updated_ts=? WHERE id=?",
             (winner['user_id'], winner['user_name'], ts, ts, giveaway_id),
         )
         cur.execute(
-            "INSERT INTO giveaway_winners (giveaway_id, user_id, user_name, reward, drawn_ts) VALUES (?, ?, ?, ?, ?)",
+            'INSERT INTO giveaway_winners (giveaway_id, user_id, user_name, reward, drawn_ts) VALUES (?, ?, ?, ?, ?)',
             (giveaway_id, winner['user_id'], winner['user_name'], giveaway.get('reward') or '', ts),
         )
+
     return get_giveaway(giveaway_id)
 
 
 def get_winner_history(limit: int = 20):
     with tx() as cur:
         cur.execute(
-            "SELECT gw.*, g.title FROM giveaway_winners gw LEFT JOIN giveaways g ON g.id=gw.giveaway_id ORDER BY gw.id DESC LIMIT ?",
+            'SELECT gw.*, g.title FROM giveaway_winners gw LEFT JOIN giveaways g ON g.id=gw.giveaway_id ORDER BY gw.id DESC LIMIT ?',
             (limit,),
         )
         return [dict(r) for r in cur.fetchall()]
