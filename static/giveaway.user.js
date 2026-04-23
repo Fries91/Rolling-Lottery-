@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Giveaway Overlay
 // @namespace    torn.giveaway.overlay
-// @version      1.3.5
-// @description  Giveaway overlay for Torn with entry requirement, reward, countdown, entrants, winners, and admin controls.
+// @version      1.4.0
+// @description  Giveaway overlay for Torn with entry requirement, reward, countdown, entrants, winners, and admin controls, plus a visual wheel tab.
 // @author       OpenAI
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
@@ -28,11 +28,19 @@
   const K_OVERLAY_POS = 'giveaway_overlay_pos';
   const K_ACTIVE_TAB = 'giveaway_active_tab';
   const K_REFRESH = 'giveaway_refresh_seconds';
+  const K_WHEEL_LAYOUTS = 'giveaway_wheel_layouts';
+  const K_WHEEL_SPINS = 'giveaway_wheel_spins';
 
   const APP_KEY = '__torn_giveaway_overlay_running__';
   let watchStarted = false;
   let ensureTimer = null;
   let refreshTimer = null;
+  let wheelAnimFrame = null;
+  let wheelState = {
+    rotation: 0,
+    spinning: false,
+    lastSpinKey: '',
+  };
 
   if (window[APP_KEY]) return;
   window[APP_KEY] = true;
@@ -84,6 +92,308 @@
     const m = Math.floor((s % 3600) / 60);
     const sec = s % 60;
     return `${d}d ${h}h ${m}m ${sec}s`;
+  }
+
+
+  function safeJsonParse(raw, fallback) {
+    try {
+      const value = JSON.parse(raw);
+      return value && typeof value === 'object' ? value : fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  function getStoredObject(key) {
+    const raw = getVal(key, '');
+    if (!raw) return {};
+    if (typeof raw === 'object' && raw) return raw;
+    return safeJsonParse(String(raw), {});
+  }
+
+  function setStoredObject(key, value) {
+    setVal(key, JSON.stringify(value || {}));
+  }
+
+  function getGiveawayId() {
+    const g = state.current?.giveaway || {};
+    return String(g.id || g.giveaway_id || g.draw_id || 'default');
+  }
+
+  function normalizeEntrants() {
+    const raw = Array.isArray(state.current?.entrants) ? state.current.entrants : [];
+    const slices = [];
+    raw.forEach((entry, idx) => {
+      const count = Math.max(1, Number(entry?.entries || 1));
+      const userId = Number(entry?.user_id || 0) || 0;
+      const userName = String(entry?.user_name || `Entrant ${idx + 1}`);
+      for (let i = 0; i < count; i += 1) {
+        slices.push({
+          user_id: userId,
+          user_name: userName,
+          entry_index: i + 1,
+          slice_key: `${userId || 'u'}:${userName}:${i + 1}`,
+        });
+      }
+    });
+    return slices;
+  }
+
+  function entrantSignature(slices) {
+    return slices.map(s => `${s.user_id}:${s.user_name}:${s.entry_index}`).sort().join('|');
+  }
+
+  function shuffleArray(items) {
+    const arr = items.slice();
+    for (let i = arr.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+  }
+
+  function getWheelSlices() {
+    const slices = normalizeEntrants();
+    const giveawayId = getGiveawayId();
+    const signature = entrantSignature(slices);
+    const store = getStoredObject(K_WHEEL_LAYOUTS);
+    const saved = store[giveawayId];
+    if (saved && saved.signature === signature && Array.isArray(saved.order) && saved.order.length === slices.length) {
+      const byKey = new Map(slices.map(s => [s.slice_key, s]));
+      const restored = saved.order.map(key => byKey.get(key)).filter(Boolean);
+      if (restored.length === slices.length) return restored;
+    }
+    const shuffled = shuffleArray(slices);
+    store[giveawayId] = {
+      signature,
+      order: shuffled.map(s => s.slice_key),
+      created_at: Date.now(),
+    };
+    setStoredObject(K_WHEEL_LAYOUTS, store);
+    return shuffled;
+  }
+
+  function getWheelDisplayName(slice) {
+    if (!slice) return '-';
+    return slice.entry_index > 1 ? `${slice.user_name} (${slice.entry_index})` : slice.user_name;
+  }
+
+  function getWinnerSliceIndex(slices) {
+    const winnerId = Number(state.current?.giveaway?.winner_user_id || 0);
+    if (!winnerId) return -1;
+    return slices.findIndex(s => Number(s.user_id || 0) === winnerId);
+  }
+
+  function getWheelCanvas() {
+    return document.getElementById('gw-wheel-canvas');
+  }
+
+  function resizeWheelCanvas(canvas) {
+    if (!canvas) return;
+    const parent = canvas.parentElement;
+    const width = Math.max(260, Math.min(380, Math.floor((parent?.clientWidth || 320) - 8)));
+    canvas.width = width;
+    canvas.height = width;
+  }
+
+  function drawWheel(rotationOverride) {
+    const canvas = getWheelCanvas();
+    if (!canvas) return;
+    resizeWheelCanvas(canvas);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const slices = getWheelSlices();
+    const size = canvas.width;
+    const cx = size / 2;
+    const cy = size / 2;
+    const outerRadius = size * 0.46;
+    const innerRadius = size * 0.16;
+    const rotation = typeof rotationOverride === 'number' ? rotationOverride : wheelState.rotation || 0;
+
+    ctx.clearRect(0, 0, size, size);
+
+    if (!slices.length) {
+      ctx.fillStyle = '#141414';
+      ctx.beginPath();
+      ctx.arc(cx, cy, outerRadius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#f4dddd';
+      ctx.font = `700 ${Math.max(18, Math.floor(size * 0.05))}px Arial`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('No entrants yet', cx, cy);
+      return;
+    }
+
+    const anglePer = (Math.PI * 2) / slices.length;
+    const colors = ['#8f1f1f', '#b53333', '#6c1515', '#c24a4a', '#7b2323', '#a82d2d'];
+
+    slices.forEach((slice, index) => {
+      const start = rotation + (index * anglePer) - (Math.PI / 2);
+      const end = start + anglePer;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, outerRadius, start, end);
+      ctx.closePath();
+      ctx.fillStyle = colors[index % colors.length];
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#1a0909';
+      ctx.stroke();
+
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(start + anglePer / 2);
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#fff5f5';
+      ctx.font = `700 ${Math.max(11, Math.floor(size * 0.032))}px Arial`;
+      const label = getWheelDisplayName(slice).slice(0, 20);
+      ctx.fillText(label, outerRadius - 12, 0);
+      ctx.restore();
+    });
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, innerRadius, 0, Math.PI * 2);
+    ctx.fillStyle = '#190909';
+    ctx.fill();
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = '#e3b9b9';
+    ctx.stroke();
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `900 ${Math.max(16, Math.floor(size * 0.06))}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('WHEEL', cx, cy);
+  }
+
+  function easeOutCubic(t) {
+    return 1 - Math.pow(1 - t, 3);
+  }
+
+  function markSpinDone(key) {
+    const store = getStoredObject(K_WHEEL_SPINS);
+    store[key] = Date.now();
+    setStoredObject(K_WHEEL_SPINS, store);
+  }
+
+  function hasSpinBeenDone(key) {
+    const store = getStoredObject(K_WHEEL_SPINS);
+    return !!store[key];
+  }
+
+  function spinWheelToIndex(index, spinKey, opts = {}) {
+    const slices = getWheelSlices();
+    if (!slices.length || index < 0 || index >= slices.length) return;
+    if (wheelAnimFrame) cancelAnimationFrame(wheelAnimFrame);
+
+    const anglePer = (Math.PI * 2) / slices.length;
+    const targetCenter = (index * anglePer) + (anglePer / 2);
+    const baseTarget = (Math.PI * 2) - targetCenter;
+    const current = wheelState.rotation || 0;
+    const normalizedCurrent = ((current % (Math.PI * 2)) + (Math.PI * 2)) % (Math.PI * 2);
+    let delta = baseTarget - normalizedCurrent;
+    while (delta <= 0) delta += Math.PI * 2;
+    const extraTurns = opts.extraTurns || 6;
+    const target = current + delta + (Math.PI * 2 * extraTurns);
+    const duration = opts.duration || 5200;
+    const start = performance.now();
+
+    wheelState.spinning = true;
+
+    function frame(now) {
+      const progress = Math.min(1, (now - start) / duration);
+      const eased = easeOutCubic(progress);
+      wheelState.rotation = current + ((target - current) * eased);
+      drawWheel(wheelState.rotation);
+      if (progress < 1) {
+        wheelAnimFrame = requestAnimationFrame(frame);
+      } else {
+        wheelState.rotation = target % (Math.PI * 2);
+        wheelState.spinning = false;
+        wheelState.lastSpinKey = spinKey || '';
+        drawWheel(wheelState.rotation);
+        if (spinKey) markSpinDone(spinKey);
+      }
+    }
+
+    wheelAnimFrame = requestAnimationFrame(frame);
+  }
+
+  function maybeSpinWinningWheel() {
+    const g = state.current?.giveaway || {};
+    const slices = getWheelSlices();
+    if (!slices.length) return;
+    const winnerIndex = getWinnerSliceIndex(slices);
+    if (winnerIndex < 0) return;
+    const spinKey = `${getGiveawayId()}:${g.winner_user_id || 0}:${g.drawn_ts || 0}`;
+    if (wheelState.spinning || hasSpinBeenDone(spinKey) || wheelState.lastSpinKey === spinKey) return;
+    spinWheelToIndex(winnerIndex, spinKey, { extraTurns: 7, duration: 5600 });
+  }
+
+  function spinPreviewWheel() {
+    const slices = getWheelSlices();
+    if (!slices.length || wheelState.spinning) return;
+    const randomIndex = Math.floor(Math.random() * slices.length);
+    spinWheelToIndex(randomIndex, '', { extraTurns: 4, duration: 2600 });
+  }
+
+  function wheelTab() {
+    const slices = getWheelSlices();
+    const g = state.current?.giveaway || {};
+    const winnerName = g.winner_name || 'Not drawn yet';
+    const winnerId = g.winner_user_id || 0;
+    const canPreview = !!slices.length;
+    return `
+      <div class="gw-card gw-hero">
+        <div class="gw-label">Wheel Draw</div>
+        <div class="gw-spacer"></div>
+        <div class="gw-wheel-wrap">
+          <div class="gw-wheel-pointer"></div>
+          <canvas id="gw-wheel-canvas" class="gw-wheel-canvas" width="320" height="320"></canvas>
+        </div>
+        <div class="gw-spacer"></div>
+        <div class="gw-grid">
+          <div class="gw-stat">
+            <div class="gw-label">Slices</div>
+            <div class="gw-value">${slices.length}</div>
+          </div>
+          <div class="gw-stat">
+            <div class="gw-label">Status</div>
+            <div class="gw-value">${esc(g.status || '-')}</div>
+          </div>
+        </div>
+        <div class="gw-spacer"></div>
+        <div class="gw-actions">
+          <div class="gw-btn ${canPreview ? '' : 'warn'}" id="gw-wheel-preview-btn">${canPreview ? 'Spin Preview' : 'Waiting For Entrants'}</div>
+          <div class="gw-btn" id="gw-wheel-refresh-btn">Refresh Wheel</div>
+        </div>
+      </div>
+      <div class="gw-card gw-highlight">
+        <div class="gw-label">Winner</div>
+        <div class="gw-winner-big">${esc(winnerName)}</div>
+        <div class="gw-mini">${winnerId ? `Torn ID: ${winnerId}` : 'The wheel will land on the backend winner when the draw is done.'}</div>
+      </div>
+      <div class="gw-card">
+        <div class="gw-label">How It Works</div>
+        <div class="gw-spacer"></div>
+        <div class="gw-mini">Entrants are shuffled into random wheel positions for this draw. When the giveaway is drawn, the wheel animates to the backend winner instead of choosing one on its own.</div>
+      </div>
+      ${!slices.length ? `<div class="gw-card"><div class="gw-value">No entrant list is available yet. If your backend does not return entrants for this endpoint, the wheel cannot build slices until that data is included.</div></div>` : ''}
+    `;
+  }
+
+  function initWheelTab() {
+    if (getVal(K_ACTIVE_TAB, 'overview') !== 'wheel') return;
+    const canvas = getWheelCanvas();
+    if (!canvas) return;
+    drawWheel();
+    window.requestAnimationFrame(() => {
+      drawWheel();
+      maybeSpinWinningWheel();
+    });
   }
 
   function req(path, method = 'GET', body = null) {
@@ -264,6 +574,7 @@
       const current = state.current?.giveaway || {};
       const data = await req('/api/giveaway/admin/draw', 'POST', { id: current.id || 0 });
       if (!data.ok) throw data;
+      wheelState.lastSpinKey = '';
       showMsg(`Winner picked: ${data.giveaway?.winner_name || 'Unknown'}`);
       await refreshAll();
     } catch (e) {
@@ -319,6 +630,23 @@
 .gw-enter-main{margin-top:10px}
 .gw-winner-big{font-size:18px;font-weight:900}
 .gw-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+
+.gw-wheel-wrap{position:relative;display:flex;align-items:center;justify-content:center;padding-top:18px}
+.gw-wheel-canvas{display:block;width:min(100%,380px);height:auto;background:radial-gradient(circle at center,#241010 0%,#140909 65%,#0f0808 100%);border:1px solid #5a2020;border-radius:50%;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+.gw-wheel-pointer{position:absolute;top:0;left:50%;transform:translateX(-50%);width:0;height:0;border-left:14px solid transparent;border-right:14px solid transparent;border-top:0;border-bottom:26px solid #f6df90;filter:drop-shadow(0 2px 2px rgba(0,0,0,.5));z-index:2}
+.gw-history-row{display:flex;justify-content:space-between;gap:10px;padding:8px;border-radius:10px;background:#151515;border:1px solid #2b2b2b}
+.gw-history-main{display:flex;flex-direction:column;gap:2px}
+.gw-history-name{font-weight:800}
+.gw-history-reward{font-weight:700;text-align:right}
+.gw-countdown-big{font-size:22px;font-weight:900;line-height:1.05}
+.gw-winner-top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.gw-winner-badge{padding:6px 10px;border-radius:999px;background:#2b1212;border:1px solid #6f2424;font-size:12px;font-weight:800}
+.gw-info-box,.gw-tos{background:#141414;border:1px solid #2a2a2a;border-radius:12px;padding:10px}
+.gw-stat-num{font-size:16px;font-weight:800;word-break:break-word}
+.gw-stat-label{font-size:11px;color:#bfa1a1;text-transform:uppercase;letter-spacing:.08em;margin-top:3px}
+.gw-linkbtn{text-decoration:none;display:inline-flex;align-items:center;justify-content:center}
+.gw-empty{padding:8px;border-radius:10px;background:#151515;border:1px solid #2b2b2b}
+
 @media (max-width:640px){
   #giveaway-overlay{right:4vw;left:4vw;width:auto;top:80px;max-height:82vh}
   .gw-tabs{grid-template-columns:repeat(3,1fr)}
@@ -336,6 +664,7 @@
       marker.style.display = 'none';
       document.body.appendChild(marker);
     }
+
     let shield = document.getElementById('giveaway-shield');
     if (!shield) {
       shield = document.createElement('div');
@@ -346,6 +675,7 @@
       makeDraggable(shield, K_SHIELD_POS);
       applyStoredPos(shield, K_SHIELD_POS, { right: '0', top: '165px', transform: 'none' });
     }
+
     let overlay = document.getElementById('giveaway-overlay');
     if (!overlay) {
       overlay = document.createElement('div');
@@ -354,8 +684,9 @@
       if (!getVal(K_OVERLAY_OPEN, false)) overlay.classList.add('hidden');
       makeDraggable(overlay, K_OVERLAY_POS, '.gw-head');
       applyStoredPos(overlay, K_OVERLAY_POS, { right: '78px', top: '110px' });
+
+      render();
     }
-    render();
   }
 
   function applyStoredPos(el, key, fallback) {
@@ -723,6 +1054,20 @@
       state.entrantSort = e.target.value || 'az';
       render();
     });
+    document.getElementById('gw-wheel-preview-btn')?.addEventListener('click', () => {
+      if (!getWheelSlices().length) return showMsg('No entrants to place on the wheel yet', true);
+      spinPreviewWheel();
+    });
+    document.getElementById('gw-wheel-refresh-btn')?.addEventListener('click', () => {
+      const giveawayId = getGiveawayId();
+      const store = getStoredObject(K_WHEEL_LAYOUTS);
+      delete store[giveawayId];
+      setStoredObject(K_WHEEL_LAYOUTS, store);
+      wheelState.rotation = 0;
+      wheelState.lastSpinKey = '';
+      drawWheel();
+      render();
+    });
     document.getElementById('gw-admin-save')?.addEventListener('click', async () => {
       if (!state.user || state.user.role !== 'admin') return showMsg('Admin access required', true);
       const current = state.current?.giveaway || {};
@@ -767,12 +1112,17 @@
     const overlay = document.getElementById('giveaway-overlay');
     if (!overlay) return;
     let tab = getVal(K_ACTIVE_TAB, 'overview');
+    if (tab === 'enter') {
+      tab = 'overview';
+      setVal(K_ACTIVE_TAB, 'overview');
+    }
     if (tab === 'entrants' && (!state.user || state.user.role !== 'admin')) {
       tab = 'overview';
       setVal(K_ACTIVE_TAB, 'overview');
     }
     const body = {
       overview: overviewTab,
+      wheel: wheelTab,
       entrants: entrantsTab,
       winners: winnersTab,
       admin: adminTab,
@@ -789,7 +1139,7 @@
         ${state.error ? `<div class="gw-note err">${esc(state.error)}</div>` : ''}
         <div class="gw-tabs">
           ${tabBtn('overview', 'Overview')}
-          ${tabBtn('enter', 'Enter')}
+          ${tabBtn('wheel', 'Wheel')}
           ${state.user && state.user.role === 'admin' ? tabBtn('entrants', 'Entrants') : ''}
           ${tabBtn('winners', 'Winners')}
           ${tabBtn('admin', 'Admin')}
@@ -800,6 +1150,7 @@
     `;
     document.getElementById('gw-close')?.addEventListener('click', toggleOverlay);
     bindEvents();
+    initWheelTab();
   }
 
   function startWatch() {
@@ -813,6 +1164,10 @@
       if (g && g.status === 'open' && overlay && !overlay.classList.contains('hidden')) {
         const countdownEl = document.getElementById('gw-live-countdown');
         if (countdownEl) countdownEl.textContent = countdownText(g.end_ts);
+      }
+      if (overlay && !overlay.classList.contains('hidden') && getVal(K_ACTIVE_TAB, 'overview') === 'wheel') {
+        drawWheel();
+        maybeSpinWinningWheel();
       }
     }, 1000);
 
