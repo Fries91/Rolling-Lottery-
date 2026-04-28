@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Giveaway Overlay
 // @namespace    torn.giveaway.overlay
-// @version      1.4.3
-// @description  Giveaway overlay for Torn with entry requirement, reward, countdown, entrants, winners, and admin controls, plus a visual wheel tab.
+// @version      1.4.4
+// @description  Giveaway overlay for Torn with entry requirement, reward, countdown, entrants, winners, and admin controls, plus a visual wheel tab and clean new-round entrant resets.
 // @author       OpenAI
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
@@ -552,6 +552,7 @@
     const endRaw = String(document.getElementById('gw-admin-end')?.value || '').trim();
     const maxEntries = Number(document.getElementById('gw-admin-max')?.value || current.max_entries_per_user || 1) || 1;
     const status = String(document.getElementById('gw-admin-status')?.value || current.status || 'draft').trim();
+    const newRound = document.getElementById('gw-admin-new-round')?.value === '1';
 
     if (!title) return showMsg('Enter a giveaway title', true);
     if (!reward) return showMsg('Enter a reward', true);
@@ -564,7 +565,7 @@
 
     try {
       const data = await req('/api/giveaway/admin/save', 'POST', {
-        id: current.id || 0,
+        id: newRound ? 0 : (current.id || 0),
         title,
         entry_requirement: entry_requirement || '1 free entry',
         reward,
@@ -573,9 +574,18 @@
         end_ts: parseLocal(endRaw),
         max_entries_per_user: Math.max(1, maxEntries),
         status: status || 'draft',
+        new_round: newRound,
       });
       if (!data.ok) throw data;
-      showMsg('Giveaway saved');
+      if (newRound) {
+        setStoredObject(K_WHEEL_LAYOUTS, {});
+        setStoredObject(K_WHEEL_SPINS, {});
+        wheelState.rotation = 0;
+        wheelState.lastSpinKey = '';
+        state.entrantSearch = '';
+      }
+      if (data.giveaway) state.current = data;
+      showMsg(data.message || (newRound ? 'New round saved and entrants cleared' : 'Giveaway saved'));
       await refreshAll();
     } catch (e) {
       showMsg(e.error || 'Save failed', true);
@@ -921,6 +931,17 @@
             <div class="gw-label">End</div>
             <input class="gw-input" id="gw-admin-end" value="${g.end_ts ? new Date(g.end_ts * 1000).toISOString().slice(0,16).replace('T',' ') : ''}" placeholder="YYYY-MM-DD HH:MM" />
           </div>
+          <div>
+            <div class="gw-label">Save Mode</div>
+            <select class="gw-select" id="gw-admin-new-round">
+              <option value="0" selected>Update this giveaway</option>
+              <option value="1">Start new round - clear entrants</option>
+            </select>
+          </div>
+          <div>
+            <div class="gw-label">New Round Note</div>
+            <div class="gw-mini">Choose new round when you are making the next giveaway. It creates a fresh draw with 0 entrants and clears the wheel.</div>
+          </div>
         </div>
         <div class="gw-spacer"></div>
         <div class="gw-grid">
@@ -1132,6 +1153,7 @@
       const maxEntries = document.getElementById('gw-admin-max')?.value || '1';
       const startRaw = document.getElementById('gw-admin-start')?.value || '';
       const endRaw = document.getElementById('gw-admin-end')?.value || '';
+      const newRound = document.getElementById('gw-admin-new-round')?.value === '1';
 
       function parseLocal(value) {
         if (!String(value).trim()) return 0;
@@ -1141,7 +1163,7 @@
 
       try {
         const data = await req('/api/giveaway/admin/save', 'POST', {
-          id: current.id || 0,
+          id: newRound ? 0 : (current.id || 0),
           title,
           entry_requirement,
           reward,
@@ -1150,9 +1172,18 @@
           end_ts: parseLocal(endRaw),
           max_entries_per_user: Number(maxEntries) || 1,
           status: current.status || 'closed',
+          new_round: newRound,
         });
         if (!data.ok) throw data;
-        showMsg('Giveaway saved');
+        if (newRound) {
+          setStoredObject(K_WHEEL_LAYOUTS, {});
+          setStoredObject(K_WHEEL_SPINS, {});
+          wheelState.rotation = 0;
+          wheelState.lastSpinKey = '';
+          state.entrantSearch = '';
+        }
+        if (data.giveaway) state.current = data;
+        showMsg(data.message || (newRound ? 'New round saved and entrants cleared' : 'Giveaway saved'));
         await refreshAll();
       } catch (e) {
         showMsg(e.error || 'Save failed', true);
