@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.5
+// @version      1.0.7
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -169,7 +169,8 @@
   function render() {
     setTabClasses();
     const adminTab = $(".fg-admin-tab");
-    adminTab.style.display = state?.is_admin ? "" : "none";
+    if (adminTab) adminTab.style.display = state?.is_admin ? "" : "none";
+    if (activeTab === "admin" && !state?.is_admin) activeTab = "overview";
 
     if (activeTab === "overview") return renderOverview();
     if (activeTab === "entry") return renderEntry();
