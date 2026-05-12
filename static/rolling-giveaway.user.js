@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.9
+// @version      1.0.10
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -12,8 +12,8 @@
 // @connect      raw.githubusercontent.com
 // @connect      *
 // @run-at       document-idle
-// @downloadURL  https://raw.githubusercontent.com/Fries91/Rolling-Lottery-/main/static/fries91-giveaway.user.js
-// @updateURL    https://raw.githubusercontent.com/Fries91/Rolling-Lottery-/main/static/fries91-giveaway.user.js
+// @downloadURL  https://raw.githubusercontent.com/Fries91/Rolling-Lottery-/main/static/rolling-giveaway.user.js
+// @updateURL    https://raw.githubusercontent.com/Fries91/Rolling-Lottery-/main/static/rolling-giveaway.user.js
 // ==/UserScript==
 
 (function () {
