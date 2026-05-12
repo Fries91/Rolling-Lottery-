@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Torn Rolling Giveaway - Fries91
+// @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.1
+// @version      1.0.3
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -40,12 +40,19 @@
         data: opts.body ? JSON.stringify(opts.body) : undefined,
         timeout: 20000,
         onload: (res) => {
+          const text = String(res.responseText || "").trim();
+          if (res.status === 404 || text.toLowerCase().startsWith("not found")) {
+            return reject(new Error("Backend not found. Check API_BASE is your Render URL and app.py is deployed."));
+          }
+          if (res.status >= 500) {
+            return reject(new Error("Backend server error " + res.status + ". Check Render logs."));
+          }
           try {
-            const json = JSON.parse(res.responseText || "{}");
+            const json = JSON.parse(text || "{}");
             if (!json.ok) return reject(new Error(json.error || "Request failed"));
             resolve(json);
           } catch (e) {
-            reject(e);
+            reject(new Error("Backend did not return JSON. Check API_BASE and open " + API_BASE + "/api/health"));
           }
         },
         onerror: () => reject(new Error("Network error")),
@@ -70,10 +77,10 @@
     const bar = document.createElement("button");
     bar.id = "fries-giveaway-topbar";
     bar.type = "button";
-    bar.title = "Open Torn Giveaway";
+    bar.title = "Open Fries91's Giveaway";
     bar.innerHTML = `
       <span class="fg-top-icon">🏆</span>
-      <span class="fg-top-text">Torn Giveaway</span>
+      <span class="fg-top-text">Fries91's Giveaway</span>
       <span class="fg-top-marquee">Free rolling giveaway • Tap to open</span>
     `;
     bar.addEventListener("click", togglePanel);
@@ -89,7 +96,7 @@
     panel.innerHTML = `
       <div class="fg-head">
         <div>
-          <div class="fg-title">🎁 Rolling Giveaway</div>
+          <div class="fg-title">🎁 Fries91's Giveaway</div>
           <div class="fg-sub">Free entry • PDA/mobile friendly</div>
         </div>
         <button class="fg-close">×</button>
@@ -142,7 +149,14 @@
   }
 
   function renderError(msg) {
-    $(".fg-body").innerHTML = `<div class="fg-card bad">Error: ${esc(msg)}</div>`;
+    const needsUrl = API_BASE.includes("YOUR-RENDER-APP");
+    $(".fg-body").innerHTML = `
+      <div class="fg-card bad">
+        <b>Error</b>
+        <span>${esc(msg)}</span>
+        ${needsUrl ? `<p class="fg-muted">You still need to replace API_BASE with your Render app URL.</p>` : ""}
+      </div>
+    `;
   }
 
   function render() {
