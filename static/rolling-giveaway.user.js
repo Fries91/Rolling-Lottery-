@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.7
+// @version      1.0.8
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -9,6 +9,7 @@
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
 // @connect      sinner-s-lottery.onrender.com
+// @connect      raw.githubusercontent.com
 // @connect      *
 // @run-at       document-idle
 // @downloadURL  https://raw.githubusercontent.com/Fries91/Rolling-Lottery-/main/static/fries91-giveaway.user.js
@@ -26,7 +27,9 @@
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
   let state = null;
+  let user = null;
   let activeTab = "overview";
+  let loading = false;
 
   function api(path, opts = {}) {
     const token = localStorage.getItem(LS_KEY) || "";
@@ -42,25 +45,17 @@
         timeout: 20000,
         onload: (res) => {
           const text = String(res.responseText || "").trim();
-
-          if (res.status === 404 || text.toLowerCase().startsWith("not found")) {
-            return reject(new Error("Backend not found. Check the Render URL and deployment."));
-          }
-
           try {
             const json = JSON.parse(text || "{}");
-
             if (!json.ok) {
               const details = json.detail ? " — " + json.detail : "";
               return reject(new Error((json.error || "Request failed") + details));
             }
-
             resolve(json);
           } catch (e) {
-            if (res.status >= 500) {
-              return reject(new Error("Backend server error " + res.status + ". Check Render logs and update app.py."));
-            }
-            reject(new Error("Backend did not return JSON. Open " + API_BASE + "/api/health"));
+            if (res.status >= 500) return reject(new Error("Backend server error " + res.status + ". Check Render logs."));
+            if (res.status === 404) return reject(new Error("Backend not found. Check Render URL."));
+            reject(new Error("Backend did not return JSON. Test " + API_BASE + "/api/health"));
           }
         },
         onerror: () => reject(new Error("Network error")),
@@ -70,8 +65,7 @@
   }
 
   function money(n) {
-    n = Number(n || 0);
-    return "$" + n.toLocaleString();
+    return "$" + Number(n || 0).toLocaleString();
   }
 
   function drawDate(ts) {
@@ -79,9 +73,12 @@
     return new Date(Number(ts) * 1000).toLocaleString();
   }
 
+  function isAdmin() {
+    return !!(user && user.is_admin) || !!(state && state.is_admin);
+  }
+
   function ensureButton() {
     if ($("#fries-giveaway-topbar")) return;
-
     const bar = document.createElement("button");
     bar.id = "fries-giveaway-topbar";
     bar.type = "button";
@@ -92,20 +89,18 @@
       <span class="fg-top-marquee">Free rolling giveaway • Tap to open</span>
     `;
     bar.addEventListener("click", togglePanel);
-
     document.body.appendChild(bar);
   }
 
   function ensurePanel() {
     if ($("#fries-giveaway-panel")) return;
-
     const panel = document.createElement("div");
     panel.id = "fries-giveaway-panel";
     panel.innerHTML = `
       <div class="fg-head">
         <div>
           <div class="fg-title">🎁 Fries91's Giveaway</div>
-          <div class="fg-sub">Free entry • PDA/mobile friendly</div>
+          <div class="fg-sub">Free entry • Pot grows with entries</div>
         </div>
         <button class="fg-close">×</button>
       </div>
@@ -116,14 +111,12 @@
       </div>
       <div class="fg-body"></div>
     `;
-
     document.body.appendChild(panel);
-
     $(".fg-close", panel).addEventListener("click", () => panel.classList.remove("open"));
     panel.querySelectorAll("[data-tab]").forEach(btn => {
-      btn.addEventListener("click", async () => {
+      btn.addEventListener("click", () => {
         activeTab = btn.dataset.tab;
-        await refresh();
+        render();
       });
     });
   }
@@ -132,27 +125,35 @@
     ensurePanel();
     const panel = $("#fries-giveaway-panel");
     panel.classList.toggle("open");
-    if (panel.classList.contains("open")) await refresh();
+    if (panel.classList.contains("open")) {
+      if (!state) await refresh();
+      else render();
+    }
   }
 
   function setTabClasses() {
     const panel = $("#fries-giveaway-panel");
-    panel.querySelectorAll("[data-tab]").forEach(btn => {
-      btn.classList.toggle("active", btn.dataset.tab === activeTab);
-    });
+    if (!panel) return;
+    const adminTab = $(".fg-admin-tab", panel);
+    if (adminTab) adminTab.style.display = isAdmin() ? "" : "none";
+    if (activeTab === "admin" && !isAdmin()) activeTab = "overview";
+    panel.querySelectorAll("[data-tab]").forEach(btn => btn.classList.toggle("active", btn.dataset.tab === activeTab));
   }
 
   async function refresh() {
+    if (loading) return;
+    loading = true;
     ensurePanel();
-    setTabClasses();
-
     try {
+      $(".fg-body").innerHTML = `<div class="fg-card"><b>Loading...</b><span>Checking giveaway status.</span></div>`;
       const res = await api("/api/state");
       state = res.giveaway;
-      if (!state.is_admin && activeTab === "admin") activeTab = "overview";
+      user = res.user || null;
       render();
     } catch (e) {
       renderError(e.message);
+    } finally {
+      loading = false;
     }
   }
 
@@ -162,36 +163,39 @@
         <b>Error</b>
         <span>${esc(msg)}</span>
         <p class="fg-muted">Test backend: ${esc(API_BASE)}/api/health</p>
+        <button class="fg-secondary" id="fg-retry">Retry</button>
       </div>
     `;
+    $("#fg-retry")?.addEventListener("click", refresh);
   }
 
   function render() {
+    if (!state) return refresh();
     setTabClasses();
-    const adminTab = $(".fg-admin-tab");
-    if (adminTab) adminTab.style.display = state?.is_admin ? "" : "none";
-    if (activeTab === "admin" && !state?.is_admin) activeTab = "overview";
-
     if (activeTab === "overview") return renderOverview();
     if (activeTab === "entry") return renderEntry();
-    if (activeTab === "admin") return renderAdmin();
+    if (activeTab === "admin" && isAdmin()) return renderAdmin();
+    return renderOverview();
   }
 
   function renderOverview() {
     const g = state;
+    setTabClasses();
     $(".fg-body").innerHTML = `
       <div class="fg-hero">
         <div class="fg-kicker">${esc(g.status).toUpperCase()}</div>
         <h2>${esc(g.title || "Fries91's Giveaway")}</h2>
-        <div class="fg-big">${money(g.player_cut)}</div>
-        <div class="fg-muted">Player prize • ${esc(g.prize_label)}</div>
+        <div class="fg-big">${money(g.total_pool)}</div>
+        <div class="fg-muted">Current pot • Base ${money(g.base_payout)} + entries ${money(g.entry_growth_total)}</div>
       </div>
 
       <div class="fg-grid">
+        <div class="fg-card"><b>Player Prize 60%</b><span>${money(g.player_cut)}</span></div>
         <div class="fg-card"><b>Entries</b><span>${g.entry_count}</span></div>
+        <div class="fg-card"><b>Entry Item</b><span>${esc(g.entry_item_name)}</span></div>
+        <div class="fg-card"><b>Entry Value</b><span>${money(g.entry_item_value)}</span></div>
+        <div class="fg-card"><b>Rollover 20%</b><span>${money(g.rollover_cut)}</span></div>
         <div class="fg-card"><b>Draw Time</b><span>${esc(drawDate(g.draw_at))}</span></div>
-        <div class="fg-card"><b>Player Cut</b><span>60%</span></div>
-        <div class="fg-card"><b>Rollover</b><span>20% • ${money(g.rollover_cut)}</span></div>
       </div>
 
       ${g.winner_name ? `
@@ -204,25 +208,30 @@
       ${g.is_admin ? `
         <div class="fg-card private">
           <b>Admin Only</b>
-          <span>Tier/Reserve Cut: 20% • ${money(g.reserve_cut)}</span>
+          <span>Tier/Admin 20%: ${money(g.reserve_cut)}</span>
         </div>
       ` : ""}
+
+      <button class="fg-secondary" id="fg-refresh">Refresh</button>
     `;
+    $("#fg-refresh").addEventListener("click", refresh);
   }
 
   function renderEntry() {
+    setTabClasses();
     const savedKey = localStorage.getItem(KEY_KEY) || "";
     $(".fg-body").innerHTML = `
       <div class="fg-card">
         <b>Login</b>
-        <p>Use a Torn API key so the app can confirm your Torn name and ID. This is a free-entry giveaway.</p>
+        <p>Use your Torn API key so the app can confirm your Torn name and ID.</p>
+        ${user ? `<p class="fg-muted">Logged in as ${esc(user.name)} [${esc(user.player_id)}]${user.is_admin ? " • Admin" : ""}</p>` : ""}
         <input class="fg-input" id="fg-api-key" placeholder="Paste Torn API key" value="${esc(savedKey)}">
         <button class="fg-primary" id="fg-login">Login / Save Key</button>
       </div>
 
       <div class="fg-card">
-        <b>Terms</b>
-        <p>No payment is required to enter. One entry per Torn player. Admin may redraw if the winner is invalid, inactive, or cannot receive the prize.</p>
+        <b>Entry Info</b>
+        <p>Entry is free in the app. The pot grows by the admin-set entry value: <b>${esc(state.entry_item_name)}</b> at <b>${money(state.entry_item_value)}</b> per entrant.</p>
       </div>
 
       <div class="fg-card">
@@ -239,6 +248,8 @@
         const res = await api("/api/login", { method: "POST", body: { api_key: key } });
         localStorage.setItem(LS_KEY, res.token);
         await refresh();
+        activeTab = res.user?.is_admin ? "admin" : "entry";
+        render();
       } catch (e) {
         alert(e.message);
       }
@@ -255,33 +266,49 @@
   }
 
   function renderAdmin() {
-    if (!state.is_admin) {
+    if (!isAdmin()) {
       activeTab = "overview";
       return renderOverview();
     }
 
+    setTabClasses();
     const drawVal = state.draw_at ? new Date(state.draw_at * 1000).toISOString().slice(0, 16) : "";
     $(".fg-body").innerHTML = `
       <div class="fg-card private">
-        <b>Admin Controls</b>
+        <b>Admin Pot Controls</b>
         <label>Title</label>
         <input class="fg-input" id="fg-title" value="${esc(state.title || "Fries91's Giveaway")}">
+
         <label>Prize Label</label>
         <input class="fg-input" id="fg-prize-label" value="${esc(state.prize_label)}">
-        <label>Total Pool / Prize Value</label>
-        <input class="fg-input" id="fg-total" type="number" value="${esc(state.total_pool)}">
+
+        <label>Starting Payout / Base Pot</label>
+        <input class="fg-input" id="fg-base-payout" type="number" value="${esc(state.base_payout)}">
+
+        <label>Entry Item Name</label>
+        <input class="fg-input" id="fg-entry-item-name" value="${esc(state.entry_item_name)}">
+
+        <label>Entry Item Value</label>
+        <input class="fg-input" id="fg-entry-item-value" type="number" value="${esc(state.entry_item_value)}">
+
         <label>Rollover Pool</label>
         <input class="fg-input" id="fg-rollover" type="number" value="${esc(state.rollover_pool)}">
+
         <label>Draw Time</label>
         <input class="fg-input" id="fg-draw-at" type="datetime-local" value="${esc(drawVal)}">
 
         <div class="fg-split">
+          <div>Base Payout: <b>${money(state.base_payout)}</b></div>
+          <div>Entries × Value: <b>${state.entry_count} × ${money(state.entry_item_value)} = ${money(state.entry_growth_total)}</b></div>
+          <div>Total Pot: <b>${money(state.total_pool)}</b></div>
           <div>Player 60%: <b>${money(state.player_cut)}</b></div>
           <div>Rollover 20%: <b>${money(state.rollover_cut)}</b></div>
-          <div>Tier/Reserve 20%: <b>${money(state.reserve_cut)}</b></div>
+          <div>Tier/Admin 20%: <b>${money(state.reserve_cut)}</b></div>
         </div>
 
-        <button class="fg-primary" id="fg-save">Save Giveaway</button>
+        <button class="fg-primary" id="fg-save">Save Settings</button>
+        <button class="fg-secondary" id="fg-open">Open Giveaway</button>
+        <button class="fg-secondary" id="fg-close-giveaway">Close Giveaway</button>
         <button class="fg-warn" id="fg-draw">Draw Winner</button>
         <button class="fg-secondary" id="fg-roll">Start New Roll</button>
       </div>
@@ -297,6 +324,8 @@
     $("#fg-roll").addEventListener("click", rollAdmin);
     $("#fg-draw").addEventListener("click", drawAdmin);
     $("#fg-load-entries").addEventListener("click", loadEntries);
+    $("#fg-open").addEventListener("click", () => setStatus("open"));
+    $("#fg-close-giveaway").addEventListener("click", () => setStatus("closed"));
   }
 
   function adminPayload() {
@@ -305,7 +334,9 @@
     return {
       title: $("#fg-title").value.trim(),
       prize_label: $("#fg-prize-label").value.trim(),
-      total_pool: Number($("#fg-total").value || 0),
+      base_payout: Number($("#fg-base-payout").value || 0),
+      entry_item_name: $("#fg-entry-item-name").value.trim(),
+      entry_item_value: Number($("#fg-entry-item-value").value || 0),
       rollover_pool: Number($("#fg-rollover").value || 0),
       draw_at
     };
@@ -314,6 +345,15 @@
   async function saveAdmin() {
     try {
       await api("/api/admin/giveaway", { method: "POST", body: adminPayload() });
+      await refresh();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  async function setStatus(status) {
+    try {
+      await api("/api/admin/status", { method: "POST", body: { status } });
       await refresh();
     } catch (e) {
       alert(e.message);
@@ -352,65 +392,27 @@
 
   GM_addStyle(`
     #fries-giveaway-topbar {
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      z-index: 999998;
-      min-height: 34px;
-      width: 100%;
-      border: 0;
-      border-bottom: 1px solid rgba(255,255,255,.16);
+      position: fixed; top: 0; left: 0; right: 0; z-index: 999998;
+      min-height: 34px; width: 100%; border: 0; border-bottom: 1px solid rgba(255,255,255,.16);
       background: linear-gradient(90deg,#18111f,#321d50,#18111f);
-      color: #fff;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
-      padding: 6px 12px;
-      box-shadow: 0 5px 18px rgba(0,0,0,.35);
-      font-family: Arial, sans-serif;
-      overflow: hidden;
+      color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center;
+      gap: 10px; padding: 6px 12px; box-shadow: 0 5px 18px rgba(0,0,0,.35);
+      font-family: Arial, sans-serif; overflow: hidden;
     }
     .fg-top-icon {
-      width: 24px;
-      height: 24px;
-      border-radius: 999px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
+      width: 24px; height: 24px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center;
       background: radial-gradient(circle at 35% 20%,#ffeaa5,#b77414 60%,#6b3a08);
       box-shadow: inset 0 1px 0 rgba(255,255,255,.45), 0 0 12px rgba(255,190,70,.25);
-      color: #1b1205;
-      font-size: 15px;
-      flex: 0 0 auto;
+      color: #1b1205; font-size: 15px; flex: 0 0 auto;
     }
-    .fg-top-text {
-      font-weight: 900;
-      text-transform: uppercase;
-      letter-spacing: .08em;
-      font-size: 13px;
-      color: #ffe9a8;
-      text-shadow: 0 1px 1px rgba(0,0,0,.7);
-      flex: 0 0 auto;
-    }
-    .fg-top-marquee {
-      color: #d9d1f5;
-      font-size: 12px;
-      white-space: nowrap;
-      opacity: .95;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
+    .fg-top-text { font-weight: 900; text-transform: uppercase; letter-spacing: .08em; font-size: 13px; color: #ffe9a8; text-shadow: 0 1px 1px rgba(0,0,0,.7); flex: 0 0 auto; }
+    .fg-top-marquee { color: #d9d1f5; font-size: 12px; white-space: nowrap; opacity: .95; overflow: hidden; text-overflow: ellipsis; }
     #fries-giveaway-panel {
       position: fixed; right: 12px; top: 46px; z-index: 999999;
       width: min(430px, calc(100vw - 24px)); max-height: calc(100vh - 58px);
       display: none; overflow: hidden; border-radius: 18px;
-      background: #11131a; color: #f4f2ff;
-      border: 1px solid rgba(255,255,255,.16);
-      box-shadow: 0 18px 60px rgba(0,0,0,.55);
-      font-family: Arial, sans-serif;
+      background: #11131a; color: #f4f2ff; border: 1px solid rgba(255,255,255,.16);
+      box-shadow: 0 18px 60px rgba(0,0,0,.55); font-family: Arial, sans-serif;
     }
     #fries-giveaway-panel.open { display: block; }
     .fg-head { display:flex; align-items:center; justify-content:space-between; padding: 14px; background: linear-gradient(135deg,#1b102b,#301a50); }
