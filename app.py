@@ -105,6 +105,9 @@ def ensure_giveaways(conn):
             title TEXT NOT NULL DEFAULT 'Fries91''s Giveaway',
             prize_label TEXT NOT NULL DEFAULT 'Prize',
             total_pool INTEGER NOT NULL DEFAULT 0,
+            base_payout INTEGER NOT NULL DEFAULT 50000000,
+            entry_item_name TEXT NOT NULL DEFAULT 'Xanax',
+            entry_item_value INTEGER NOT NULL DEFAULT 850000,
             player_percent INTEGER NOT NULL DEFAULT 60,
             rollover_percent INTEGER NOT NULL DEFAULT 20,
             reserve_percent INTEGER NOT NULL DEFAULT 20,
@@ -122,6 +125,9 @@ def ensure_giveaways(conn):
         ("title", "title TEXT NOT NULL DEFAULT 'Fries91''s Giveaway'"),
         ("prize_label", "prize_label TEXT NOT NULL DEFAULT 'Prize'"),
         ("total_pool", "total_pool INTEGER NOT NULL DEFAULT 0"),
+        ("base_payout", "base_payout INTEGER NOT NULL DEFAULT 50000000"),
+        ("entry_item_name", "entry_item_name TEXT NOT NULL DEFAULT 'Xanax'"),
+        ("entry_item_value", "entry_item_value INTEGER NOT NULL DEFAULT 850000"),
         ("player_percent", "player_percent INTEGER NOT NULL DEFAULT 60"),
         ("rollover_percent", "rollover_percent INTEGER NOT NULL DEFAULT 20"),
         ("reserve_percent", "reserve_percent INTEGER NOT NULL DEFAULT 20"),
@@ -164,7 +170,6 @@ def init_db():
         ensure_giveaways(conn)
         ensure_entries(conn)
 
-        # IMPORTANT: only run cleanup when both tables are verified correct.
         if "player_id" in cols(conn, "sessions") and "player_id" in cols(conn, "users"):
             conn.execute("DELETE FROM sessions WHERE player_id NOT IN (SELECT player_id FROM users)")
 
@@ -180,10 +185,11 @@ def init_db():
         if not conn.execute("SELECT id FROM giveaways ORDER BY id DESC LIMIT 1").fetchone():
             conn.execute("""
                 INSERT INTO giveaways
-                (title, prize_label, total_pool, player_percent, rollover_percent, reserve_percent,
-                 rollover_pool, status, draw_at, created_by, created_at, updated_at)
-                VALUES (?, ?, 0, 60, 20, 20, 0, 'open', NULL, ?, ?, ?)
-            """, ("Fries91's Giveaway", "Faction/Event Prize", ADMIN_PLAYER_ID, t, t))
+                (title, prize_label, total_pool, base_payout, entry_item_name, entry_item_value,
+                 player_percent, rollover_percent, reserve_percent, rollover_pool, status, draw_at,
+                 created_by, created_at, updated_at)
+                VALUES (?, ?, 0, ?, ?, ?, 60, 20, 20, 0, 'open', NULL, ?, ?, ?)
+            """, ("Fries91's Giveaway", "Faction/Event Prize", 50000000, "Xanax", 850000, ADMIN_PLAYER_ID, t, t))
 
 
 init_db()
@@ -235,16 +241,33 @@ def admin_required(fn):
     return wrap
 
 
-def clean_giveaway(g, private=False):
-    total = int(g["total_pool"] or 0)
+def get_entry_count(conn, giveaway_id):
+    return int(conn.execute(
+        "SELECT COUNT(*) AS c FROM entries WHERE giveaway_id=?",
+        (giveaway_id,)
+    ).fetchone()["c"])
+
+
+def clean_giveaway(conn, g, private=False):
+    entry_count = get_entry_count(conn, g["id"])
+    base_payout = int(g["base_payout"] or 0)
+    entry_item_value = int(g["entry_item_value"] or 0)
+    computed_pool = base_payout + (entry_count * entry_item_value)
+
     pp = int(g["player_percent"] or 60)
     rp = int(g["rollover_percent"] or 20)
     ap = int(g["reserve_percent"] or 20)
+
     out = {
         "id": g["id"],
         "title": g["title"] or "Fries91's Giveaway",
         "prize_label": g["prize_label"] or "Prize",
-        "total_pool": total,
+        "base_payout": base_payout,
+        "entry_item_name": g["entry_item_name"] or "Xanax",
+        "entry_item_value": entry_item_value,
+        "entry_count": entry_count,
+        "entry_growth_total": entry_count * entry_item_value,
+        "total_pool": computed_pool,
         "player_percent": pp,
         "rollover_percent": rp,
         "status": g["status"] or "open",
@@ -252,13 +275,13 @@ def clean_giveaway(g, private=False):
         "winner_player_id": g["winner_player_id"],
         "winner_name": g["winner_name"],
         "rollover_pool": int(g["rollover_pool"] or 0),
-        "player_cut": total * pp // 100,
-        "rollover_cut": total * rp // 100,
+        "player_cut": computed_pool * pp // 100,
+        "rollover_cut": computed_pool * rp // 100,
         "entry_is_free": True,
     }
     if private:
         out["reserve_percent"] = ap
-        out["reserve_cut"] = total * ap // 100
+        out["reserve_cut"] = computed_pool * ap // 100
         out["admin_player_id"] = ADMIN_PLAYER_ID
     return out
 
@@ -278,6 +301,7 @@ def health():
             "admin": ADMIN_PLAYER_ID,
             "users_columns": sorted(list(cols(conn, "users"))),
             "sessions_columns": sorted(list(cols(conn, "sessions"))),
+            "giveaways_columns": sorted(list(cols(conn, "giveaways"))),
         })
 
 
@@ -335,7 +359,6 @@ def state():
             init_db()
             g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
 
-        count = conn.execute("SELECT COUNT(*) AS c FROM entries WHERE giveaway_id=?", (g["id"],)).fetchone()["c"]
         entered = False
         user = None
         if s:
@@ -343,10 +366,10 @@ def state():
                                         (g["id"], s["player_id"])).fetchone())
             user = {"player_id": s["player_id"], "name": s["name"], "is_admin": private}
 
-    payload = clean_giveaway(g, private)
-    payload["entry_count"] = int(count)
-    payload["entered"] = entered
-    payload["is_admin"] = private
+        payload = clean_giveaway(conn, g, private)
+        payload["entered"] = entered
+        payload["is_admin"] = private
+
     return jsonify({"ok": True, "giveaway": payload, "user": user})
 
 
@@ -384,12 +407,15 @@ def admin_save(s):
         g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
         conn.execute("""
             UPDATE giveaways
-            SET title=?, prize_label=?, total_pool=?, rollover_pool=?, draw_at=?, updated_at=?
+            SET title=?, prize_label=?, base_payout=?, entry_item_name=?, entry_item_value=?,
+                rollover_pool=?, draw_at=?, updated_at=?
             WHERE id=?
         """, (
             (data.get("title") or "Fries91's Giveaway").strip(),
             (data.get("prize_label") or "Faction/Event Prize").strip(),
-            int(data.get("total_pool") or 0),
+            int(data.get("base_payout") or 0),
+            (data.get("entry_item_name") or "Xanax").strip(),
+            int(data.get("entry_item_value") or 0),
             int(data.get("rollover_pool") or 0),
             int(data["draw_at"]) if str(data.get("draw_at") or "").isdigit() else None,
             t,
@@ -420,18 +446,34 @@ def admin_roll(s):
     with db() as conn:
         conn.execute("""
             INSERT INTO giveaways
-            (title, prize_label, total_pool, player_percent, rollover_percent, reserve_percent,
-             rollover_pool, status, draw_at, created_by, created_at, updated_at)
-            VALUES (?, ?, ?, 60, 20, 20, ?, 'open', NULL, ?, ?, ?)
+            (title, prize_label, total_pool, base_payout, entry_item_name, entry_item_value,
+             player_percent, rollover_percent, reserve_percent, rollover_pool, status, draw_at,
+             created_by, created_at, updated_at)
+            VALUES (?, ?, 0, ?, ?, ?, 60, 20, 20, ?, 'open', NULL, ?, ?, ?)
         """, (
             (data.get("title") or "Fries91's Giveaway").strip(),
             (data.get("prize_label") or "Faction/Event Prize").strip(),
-            int(data.get("total_pool") or 0),
+            int(data.get("base_payout") or 0),
+            (data.get("entry_item_name") or "Xanax").strip(),
+            int(data.get("entry_item_value") or 0),
             int(data.get("rollover_pool") or 0),
             s["player_id"],
             t,
             t,
         ))
+    return jsonify({"ok": True})
+
+
+@app.post("/api/admin/status")
+@admin_required
+def admin_status(s):
+    data = request.get_json(force=True, silent=True) or {}
+    status = (data.get("status") or "open").strip().lower()
+    if status not in ("open", "closed", "drawn"):
+        return jsonify({"ok": False, "error": "Invalid status"}), 400
+    with db() as conn:
+        g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
+        conn.execute("UPDATE giveaways SET status=?, updated_at=? WHERE id=?", (status, now_ts(), g["id"]))
     return jsonify({"ok": True})
 
 
