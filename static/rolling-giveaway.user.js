@@ -1,22 +1,24 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.3
+// @version      1.0.5
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @match        https://*.torn.com/*
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
+// @connect      sinner-s-lottery.onrender.com
 // @connect      *
 // @run-at       document-idle
+// @downloadURL  https://raw.githubusercontent.com/Fries91/Rolling-Lottery-/main/static/fries91-giveaway.user.js
+// @updateURL    https://raw.githubusercontent.com/Fries91/Rolling-Lottery-/main/static/fries91-giveaway.user.js
 // ==/UserScript==
 
 (function () {
   "use strict";
 
   const API_BASE = "https://sinner-s-lottery.onrender.com";
-  const ADMIN_ID = 3679030;
   const LS_KEY = "fries91_giveaway_session_v1";
   const KEY_KEY = "fries91_giveaway_api_key_v1";
 
@@ -24,7 +26,6 @@
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
   let state = null;
-  let me = null;
   let activeTab = "overview";
 
   function api(path, opts = {}) {
@@ -41,18 +42,25 @@
         timeout: 20000,
         onload: (res) => {
           const text = String(res.responseText || "").trim();
+
           if (res.status === 404 || text.toLowerCase().startsWith("not found")) {
-            return reject(new Error("Backend not found. Check API_BASE is your Render URL and app.py is deployed."));
+            return reject(new Error("Backend not found. Check the Render URL and deployment."));
           }
-          if (res.status >= 500) {
-            return reject(new Error("Backend server error " + res.status + ". Check Render logs."));
-          }
+
           try {
             const json = JSON.parse(text || "{}");
-            if (!json.ok) return reject(new Error(json.error || "Request failed"));
+
+            if (!json.ok) {
+              const details = json.detail ? " — " + json.detail : "";
+              return reject(new Error((json.error || "Request failed") + details));
+            }
+
             resolve(json);
           } catch (e) {
-            reject(new Error("Backend did not return JSON. Check API_BASE and open " + API_BASE + "/api/health"));
+            if (res.status >= 500) {
+              return reject(new Error("Backend server error " + res.status + ". Check Render logs and update app.py."));
+            }
+            reject(new Error("Backend did not return JSON. Open " + API_BASE + "/api/health"));
           }
         },
         onerror: () => reject(new Error("Network error")),
@@ -80,7 +88,7 @@
     bar.title = "Open Fries91's Giveaway";
     bar.innerHTML = `
       <span class="fg-top-icon">🏆</span>
-      <span class="fg-top-text">Fries91's Giveaway</span>
+      <span class="fg-top-text">FRIES91'S GIVEAWAY</span>
       <span class="fg-top-marquee">Free rolling giveaway • Tap to open</span>
     `;
     bar.addEventListener("click", togglePanel);
@@ -149,12 +157,11 @@
   }
 
   function renderError(msg) {
-    const needsUrl = API_BASE.includes("YOUR-RENDER-APP");
     $(".fg-body").innerHTML = `
       <div class="fg-card bad">
         <b>Error</b>
         <span>${esc(msg)}</span>
-        ${needsUrl ? `<p class="fg-muted">You still need to replace API_BASE with your Render app URL.</p>` : ""}
+        <p class="fg-muted">Test backend: ${esc(API_BASE)}/api/health</p>
       </div>
     `;
   }
@@ -174,7 +181,7 @@
     $(".fg-body").innerHTML = `
       <div class="fg-hero">
         <div class="fg-kicker">${esc(g.status).toUpperCase()}</div>
-        <h2>${esc(g.title)}</h2>
+        <h2>${esc(g.title || "Fries91's Giveaway")}</h2>
         <div class="fg-big">${money(g.player_cut)}</div>
         <div class="fg-muted">Player prize • ${esc(g.prize_label)}</div>
       </div>
@@ -230,7 +237,6 @@
       try {
         const res = await api("/api/login", { method: "POST", body: { api_key: key } });
         localStorage.setItem(LS_KEY, res.token);
-        me = res.user;
         await refresh();
       } catch (e) {
         alert(e.message);
@@ -258,7 +264,7 @@
       <div class="fg-card private">
         <b>Admin Controls</b>
         <label>Title</label>
-        <input class="fg-input" id="fg-title" value="${esc(state.title)}">
+        <input class="fg-input" id="fg-title" value="${esc(state.title || "Fries91's Giveaway")}">
         <label>Prize Label</label>
         <input class="fg-input" id="fg-prize-label" value="${esc(state.prize_label)}">
         <label>Total Pool / Prize Value</label>
