@@ -157,10 +157,18 @@ def ensure_entries(conn):
                 giveaway_id INTEGER NOT NULL,
                 player_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                reviewed_by INTEGER,
+                reviewed_at INTEGER,
                 created_at INTEGER NOT NULL,
                 UNIQUE(giveaway_id, player_id)
             )
         """)
+        return
+
+    add_col(conn, "entries", "status", "status TEXT NOT NULL DEFAULT 'pending'")
+    add_col(conn, "entries", "reviewed_by", "reviewed_by INTEGER")
+    add_col(conn, "entries", "reviewed_at", "reviewed_at INTEGER")
 
 
 def init_db():
@@ -241,7 +249,12 @@ def admin_required(fn):
     return wrap
 
 
-def get_entry_count(conn, giveaway_id):
+def count_entries(conn, giveaway_id, status=None):
+    if status:
+        return int(conn.execute(
+            "SELECT COUNT(*) AS c FROM entries WHERE giveaway_id=? AND status=?",
+            (giveaway_id, status)
+        ).fetchone()["c"])
     return int(conn.execute(
         "SELECT COUNT(*) AS c FROM entries WHERE giveaway_id=?",
         (giveaway_id,)
@@ -249,10 +262,14 @@ def get_entry_count(conn, giveaway_id):
 
 
 def clean_giveaway(conn, g, private=False):
-    entry_count = get_entry_count(conn, g["id"])
+    approved_count = count_entries(conn, g["id"], "approved")
+    pending_count = count_entries(conn, g["id"], "pending")
+    rejected_count = count_entries(conn, g["id"], "rejected")
+    total_entry_count = count_entries(conn, g["id"])
+
     base_payout = int(g["base_payout"] or 0)
     entry_item_value = int(g["entry_item_value"] or 0)
-    computed_pool = base_payout + (entry_count * entry_item_value)
+    computed_pool = base_payout + (approved_count * entry_item_value)
 
     pp = int(g["player_percent"] or 60)
     rp = int(g["rollover_percent"] or 20)
@@ -265,8 +282,12 @@ def clean_giveaway(conn, g, private=False):
         "base_payout": base_payout,
         "entry_item_name": g["entry_item_name"] or "Xanax",
         "entry_item_value": entry_item_value,
-        "entry_count": entry_count,
-        "entry_growth_total": entry_count * entry_item_value,
+        "entry_count": approved_count,
+        "approved_entry_count": approved_count,
+        "pending_entry_count": pending_count,
+        "rejected_entry_count": rejected_count,
+        "total_entry_count": total_entry_count,
+        "entry_growth_total": approved_count * entry_item_value,
         "total_pool": computed_pool,
         "player_percent": pp,
         "rollover_percent": rp,
@@ -278,6 +299,7 @@ def clean_giveaway(conn, g, private=False):
         "player_cut": computed_pool * pp // 100,
         "rollover_cut": computed_pool * rp // 100,
         "entry_is_free": True,
+        "approval_required": True,
     }
     if private:
         out["reserve_percent"] = ap
@@ -288,7 +310,7 @@ def clean_giveaway(conn, g, private=False):
 
 @app.get("/")
 def root():
-    return jsonify({"ok": True, "app": APP_NAME, "mode": "free-entry-giveaway"})
+    return jsonify({"ok": True, "app": APP_NAME, "mode": "free-entry-admin-approval"})
 
 
 @app.get("/api/health")
@@ -301,6 +323,7 @@ def health():
             "admin": ADMIN_PLAYER_ID,
             "users_columns": sorted(list(cols(conn, "users"))),
             "sessions_columns": sorted(list(cols(conn, "sessions"))),
+            "entries_columns": sorted(list(cols(conn, "entries"))),
             "giveaways_columns": sorted(list(cols(conn, "giveaways"))),
         })
 
@@ -359,16 +382,21 @@ def state():
             init_db()
             g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
 
-        entered = False
+        user_entry = None
         user = None
         if s:
-            entered = bool(conn.execute("SELECT id FROM entries WHERE giveaway_id=? AND player_id=?",
-                                        (g["id"], s["player_id"])).fetchone())
+            erow = conn.execute(
+                "SELECT id, status, created_at, reviewed_at FROM entries WHERE giveaway_id=? AND player_id=?",
+                (g["id"], s["player_id"])
+            ).fetchone()
+            if erow:
+                user_entry = dict(erow)
             user = {"player_id": s["player_id"], "name": s["name"], "is_admin": private}
 
         payload = clean_giveaway(conn, g, private)
-        payload["entered"] = entered
-        payload["is_admin"] = private
+        payload["entered"] = bool(user_entry)
+        payload["entry_status"] = user_entry["status"] if user_entry else None
+        payload["user_entry"] = user_entry
 
     return jsonify({"ok": True, "giveaway": payload, "user": user})
 
@@ -381,11 +409,13 @@ def enter(s):
         if not g or g["status"] != "open":
             return jsonify({"ok": False, "error": "Giveaway is not open"}), 400
         try:
-            conn.execute("INSERT INTO entries (giveaway_id, player_id, name, created_at) VALUES (?, ?, ?, ?)",
-                         (g["id"], s["player_id"], s["name"], now_ts()))
+            conn.execute("""
+                INSERT INTO entries (giveaway_id, player_id, name, status, created_at)
+                VALUES (?, ?, ?, 'pending', ?)
+            """, (g["id"], s["player_id"], s["name"], now_ts()))
         except sqlite3.IntegrityError:
-            return jsonify({"ok": True, "message": "You are already entered"})
-    return jsonify({"ok": True, "message": "Entry saved"})
+            return jsonify({"ok": True, "message": "You already have an entry request"})
+    return jsonify({"ok": True, "message": "Entry request submitted for admin approval"})
 
 
 @app.get("/api/admin/entries")
@@ -393,9 +423,37 @@ def enter(s):
 def admin_entries(s):
     with db() as conn:
         g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
-        rows = conn.execute("SELECT player_id, name, created_at FROM entries WHERE giveaway_id=? ORDER BY created_at ASC",
-                            (g["id"],)).fetchall()
+        rows = conn.execute("""
+            SELECT id, player_id, name, status, created_at, reviewed_by, reviewed_at
+            FROM entries
+            WHERE giveaway_id=?
+            ORDER BY
+                CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,
+                created_at ASC
+        """, (g["id"],)).fetchall()
     return jsonify({"ok": True, "entries": [dict(r) for r in rows]})
+
+
+@app.post("/api/admin/entry-status")
+@admin_required
+def admin_entry_status(s):
+    data = request.get_json(force=True, silent=True) or {}
+    entry_id = int(data.get("entry_id") or 0)
+    status = (data.get("status") or "").strip().lower()
+
+    if status not in ("pending", "approved", "rejected"):
+        return jsonify({"ok": False, "error": "Invalid entry status"}), 400
+    if not entry_id:
+        return jsonify({"ok": False, "error": "Missing entry id"}), 400
+
+    with db() as conn:
+        conn.execute("""
+            UPDATE entries
+            SET status=?, reviewed_by=?, reviewed_at=?
+            WHERE id=?
+        """, (status, s["player_id"], now_ts(), entry_id))
+
+    return jsonify({"ok": True})
 
 
 @app.post("/api/admin/giveaway")
@@ -429,9 +487,13 @@ def admin_save(s):
 def admin_draw(s):
     with db() as conn:
         g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
-        rows = conn.execute("SELECT player_id, name FROM entries WHERE giveaway_id=?", (g["id"],)).fetchall()
+        rows = conn.execute("""
+            SELECT player_id, name
+            FROM entries
+            WHERE giveaway_id=? AND status='approved'
+        """, (g["id"],)).fetchall()
         if not rows:
-            return jsonify({"ok": False, "error": "No entries to draw"}), 400
+            return jsonify({"ok": False, "error": "No approved entries to draw"}), 400
         winner = secrets.choice(rows)
         conn.execute("UPDATE giveaways SET status='drawn', winner_player_id=?, winner_name=?, updated_at=? WHERE id=?",
                      (winner["player_id"], winner["name"], now_ts(), g["id"]))
