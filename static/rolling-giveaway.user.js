@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.8
+// @version      1.0.9
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -73,6 +73,11 @@
     return new Date(Number(ts) * 1000).toLocaleString();
   }
 
+  function statusPill(status) {
+    const s = String(status || "none").toLowerCase();
+    return `<span class="fg-status fg-status-${esc(s)}">${esc(s.toUpperCase())}</span>`;
+  }
+
   function isAdmin() {
     return !!(user && user.is_admin) || !!(state && state.is_admin);
   }
@@ -86,7 +91,7 @@
     bar.innerHTML = `
       <span class="fg-top-icon">🏆</span>
       <span class="fg-top-text">FRIES91'S GIVEAWAY</span>
-      <span class="fg-top-marquee">Free rolling giveaway • Tap to open</span>
+      <span class="fg-top-marquee">Free rolling giveaway • Approval required</span>
     `;
     bar.addEventListener("click", togglePanel);
     document.body.appendChild(bar);
@@ -100,7 +105,7 @@
       <div class="fg-head">
         <div>
           <div class="fg-title">🎁 Fries91's Giveaway</div>
-          <div class="fg-sub">Free entry • Pot grows with entries</div>
+          <div class="fg-sub">Free entry • Admin approval required</div>
         </div>
         <button class="fg-close">×</button>
       </div>
@@ -186,16 +191,21 @@
         <div class="fg-kicker">${esc(g.status).toUpperCase()}</div>
         <h2>${esc(g.title || "Fries91's Giveaway")}</h2>
         <div class="fg-big">${money(g.total_pool)}</div>
-        <div class="fg-muted">Current pot • Base ${money(g.base_payout)} + entries ${money(g.entry_growth_total)}</div>
+        <div class="fg-muted">Current pot • Approved entries only</div>
       </div>
 
       <div class="fg-grid">
         <div class="fg-card"><b>Player Prize 60%</b><span>${money(g.player_cut)}</span></div>
-        <div class="fg-card"><b>Entries</b><span>${g.entry_count}</span></div>
-        <div class="fg-card"><b>Entry Item</b><span>${esc(g.entry_item_name)}</span></div>
+        <div class="fg-card"><b>Approved Entries</b><span>${g.approved_entry_count}</span></div>
+        <div class="fg-card"><b>Pending Entries</b><span>${g.pending_entry_count}</span></div>
+        <div class="fg-card"><b>Rejected Entries</b><span>${g.rejected_entry_count}</span></div>
         <div class="fg-card"><b>Entry Value</b><span>${money(g.entry_item_value)}</span></div>
         <div class="fg-card"><b>Rollover 20%</b><span>${money(g.rollover_cut)}</span></div>
-        <div class="fg-card"><b>Draw Time</b><span>${esc(drawDate(g.draw_at))}</span></div>
+      </div>
+
+      <div class="fg-card">
+        <b>Pot Formula</b>
+        <span>Base ${money(g.base_payout)} + Approved Entries ${g.approved_entry_count} × ${money(g.entry_item_value)} = ${money(g.total_pool)}</span>
       </div>
 
       ${g.winner_name ? `
@@ -220,6 +230,8 @@
   function renderEntry() {
     setTabClasses();
     const savedKey = localStorage.getItem(KEY_KEY) || "";
+    const entryStatus = state.entry_status ? statusPill(state.entry_status) : `<span class="fg-muted">Not entered</span>`;
+
     $(".fg-body").innerHTML = `
       <div class="fg-card">
         <b>Login</b>
@@ -230,14 +242,15 @@
       </div>
 
       <div class="fg-card">
-        <b>Entry Info</b>
-        <p>Entry is free in the app. The pot grows by the admin-set entry value: <b>${esc(state.entry_item_name)}</b> at <b>${money(state.entry_item_value)}</b> per entrant.</p>
+        <b>Entry Status</b>
+        <p>${entryStatus}</p>
+        <p class="fg-muted">Entries are submitted as pending. Only admin-approved entries count toward the draw and pot.</p>
       </div>
 
       <div class="fg-card">
         <b>Your Entry</b>
-        <p>${state.entered ? "You are entered for the current giveaway." : "You are not entered yet."}</p>
-        <button class="fg-primary" id="fg-enter">${state.entered ? "Already Entered" : "Enter Giveaway"}</button>
+        <p>${state.entered ? "You already submitted an entry request." : "You have not submitted an entry request yet."}</p>
+        <button class="fg-primary" id="fg-enter">${state.entered ? "Entry Submitted" : "Submit Entry Request"}</button>
       </div>
     `;
 
@@ -298,8 +311,10 @@
         <input class="fg-input" id="fg-draw-at" type="datetime-local" value="${esc(drawVal)}">
 
         <div class="fg-split">
+          <div>Approved Entries: <b>${state.approved_entry_count}</b></div>
+          <div>Pending Entries: <b>${state.pending_entry_count}</b></div>
           <div>Base Payout: <b>${money(state.base_payout)}</b></div>
-          <div>Entries × Value: <b>${state.entry_count} × ${money(state.entry_item_value)} = ${money(state.entry_growth_total)}</b></div>
+          <div>Approved × Value: <b>${state.approved_entry_count} × ${money(state.entry_item_value)} = ${money(state.entry_growth_total)}</b></div>
           <div>Total Pot: <b>${money(state.total_pool)}</b></div>
           <div>Player 60%: <b>${money(state.player_cut)}</b></div>
           <div>Rollover 20%: <b>${money(state.rollover_cut)}</b></div>
@@ -314,8 +329,8 @@
       </div>
 
       <div class="fg-card">
-        <b>Entries</b>
-        <button class="fg-secondary" id="fg-load-entries">Load Entrants</button>
+        <b>Entry Approvals</b>
+        <button class="fg-secondary" id="fg-load-entries">Load Entries</button>
         <div id="fg-entries"></div>
       </div>
     `;
@@ -360,6 +375,18 @@
     }
   }
 
+  async function setEntryStatus(entryId, status) {
+    try {
+      await api("/api/admin/entry-status", { method: "POST", body: { entry_id: entryId, status } });
+      await refresh();
+      activeTab = "admin";
+      render();
+      await loadEntries();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
   async function rollAdmin() {
     try {
       await api("/api/admin/roll", { method: "POST", body: adminPayload() });
@@ -383,8 +410,22 @@
     try {
       const res = await api("/api/admin/entries");
       $("#fg-entries").innerHTML = res.entries.length
-        ? res.entries.map(x => `<div class="fg-entry">${esc(x.name)} [${esc(x.player_id)}]</div>`).join("")
+        ? res.entries.map(x => `
+          <div class="fg-entry">
+            <div><b>${esc(x.name)} [${esc(x.player_id)}]</b></div>
+            <div>${statusPill(x.status)}</div>
+            <div class="fg-entry-actions">
+              <button data-approve="${x.id}" class="fg-mini good">Approve</button>
+              <button data-reject="${x.id}" class="fg-mini badbtn">Reject</button>
+              <button data-pending="${x.id}" class="fg-mini">Pending</button>
+            </div>
+          </div>
+        `).join("")
         : `<div class="fg-muted">No entries yet.</div>`;
+
+      $("#fg-entries").querySelectorAll("[data-approve]").forEach(b => b.addEventListener("click", () => setEntryStatus(Number(b.dataset.approve), "approved")));
+      $("#fg-entries").querySelectorAll("[data-reject]").forEach(b => b.addEventListener("click", () => setEntryStatus(Number(b.dataset.reject), "rejected")));
+      $("#fg-entries").querySelectorAll("[data-pending]").forEach(b => b.addEventListener("click", () => setEntryStatus(Number(b.dataset.pending), "pending")));
     } catch (e) {
       alert(e.message);
     }
@@ -399,21 +440,10 @@
       gap: 10px; padding: 6px 12px; box-shadow: 0 5px 18px rgba(0,0,0,.35);
       font-family: Arial, sans-serif; overflow: hidden;
     }
-    .fg-top-icon {
-      width: 24px; height: 24px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center;
-      background: radial-gradient(circle at 35% 20%,#ffeaa5,#b77414 60%,#6b3a08);
-      box-shadow: inset 0 1px 0 rgba(255,255,255,.45), 0 0 12px rgba(255,190,70,.25);
-      color: #1b1205; font-size: 15px; flex: 0 0 auto;
-    }
+    .fg-top-icon { width: 24px; height: 24px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; background: radial-gradient(circle at 35% 20%,#ffeaa5,#b77414 60%,#6b3a08); color: #1b1205; font-size: 15px; flex: 0 0 auto; }
     .fg-top-text { font-weight: 900; text-transform: uppercase; letter-spacing: .08em; font-size: 13px; color: #ffe9a8; text-shadow: 0 1px 1px rgba(0,0,0,.7); flex: 0 0 auto; }
     .fg-top-marquee { color: #d9d1f5; font-size: 12px; white-space: nowrap; opacity: .95; overflow: hidden; text-overflow: ellipsis; }
-    #fries-giveaway-panel {
-      position: fixed; right: 12px; top: 46px; z-index: 999999;
-      width: min(430px, calc(100vw - 24px)); max-height: calc(100vh - 58px);
-      display: none; overflow: hidden; border-radius: 18px;
-      background: #11131a; color: #f4f2ff; border: 1px solid rgba(255,255,255,.16);
-      box-shadow: 0 18px 60px rgba(0,0,0,.55); font-family: Arial, sans-serif;
-    }
+    #fries-giveaway-panel { position: fixed; right: 12px; top: 46px; z-index: 999999; width: min(430px, calc(100vw - 24px)); max-height: calc(100vh - 58px); display: none; overflow: hidden; border-radius: 18px; background: #11131a; color: #f4f2ff; border: 1px solid rgba(255,255,255,.16); box-shadow: 0 18px 60px rgba(0,0,0,.55); font-family: Arial, sans-serif; }
     #fries-giveaway-panel.open { display: block; }
     .fg-head { display:flex; align-items:center; justify-content:space-between; padding: 14px; background: linear-gradient(135deg,#1b102b,#301a50); }
     .fg-title { font-weight: 800; font-size: 18px; }
@@ -440,7 +470,15 @@
     .fg-secondary { background:#2f3447; }
     .fg-warn { background:#a15b13; }
     .fg-split { display:grid; gap:6px; background:#11131a; border-radius:12px; padding:10px; margin:10px 0; }
-    .fg-entry { padding:8px; border-bottom:1px solid rgba(255,255,255,.1); }
+    .fg-entry { padding:10px; border:1px solid rgba(255,255,255,.1); border-radius:12px; margin:8px 0; background:#11131a; }
+    .fg-entry-actions { display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; margin-top:8px; }
+    .fg-mini { padding:7px; border:0; border-radius:9px; background:#2f3447; color:white; font-weight:800; }
+    .fg-mini.good { background:#176b3a; }
+    .fg-mini.badbtn { background:#7a2020; }
+    .fg-status { display:inline-block; padding:4px 8px; border-radius:999px; font-size:11px; font-weight:900; margin:3px 0; }
+    .fg-status-approved { background:#154f2e; color:#9affc3; }
+    .fg-status-pending { background:#5a4315; color:#ffe49a; }
+    .fg-status-rejected { background:#5a1717; color:#ff9a9a; }
     @media (max-width: 520px) {
       #fries-giveaway-topbar { min-height: 36px; padding: 6px 8px; gap: 7px; }
       .fg-top-text { font-size: 12px; }
