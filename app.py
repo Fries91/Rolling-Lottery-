@@ -8,7 +8,7 @@ import requests
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
-APP_NAME = "Torn Rolling Giveaway"
+APP_NAME = "Fries91's Giveaway"
 ADMIN_PLAYER_ID = int(os.environ.get("ADMIN_PLAYER_ID", "3679030"))
 DB_PATH = os.environ.get("DB_PATH", "giveaway.db")
 TORN_API_BASE = os.environ.get("TORN_API_BASE", "https://api.torn.com")
@@ -31,6 +31,17 @@ def db():
     return conn
 
 
+def table_columns(conn, table_name):
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {row["name"] for row in rows}
+
+
+def add_column_if_missing(conn, table_name, column_name, column_sql):
+    cols = table_columns(conn, table_name)
+    if column_name not in cols:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+
+
 def init_db():
     with db() as conn:
         conn.execute("""
@@ -43,6 +54,7 @@ def init_db():
                 updated_at INTEGER NOT NULL
             )
         """)
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS giveaways (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,6 +74,23 @@ def init_db():
                 updated_at INTEGER NOT NULL
             )
         """)
+
+        # Safe migrations for old databases already on Render.
+        add_column_if_missing(conn, "giveaways", "title", "title TEXT NOT NULL DEFAULT 'Fries91''s Giveaway'")
+        add_column_if_missing(conn, "giveaways", "prize_label", "prize_label TEXT NOT NULL DEFAULT 'Prize'")
+        add_column_if_missing(conn, "giveaways", "total_pool", "total_pool INTEGER NOT NULL DEFAULT 0")
+        add_column_if_missing(conn, "giveaways", "player_percent", "player_percent INTEGER NOT NULL DEFAULT 60")
+        add_column_if_missing(conn, "giveaways", "rollover_percent", "rollover_percent INTEGER NOT NULL DEFAULT 20")
+        add_column_if_missing(conn, "giveaways", "reserve_percent", "reserve_percent INTEGER NOT NULL DEFAULT 20")
+        add_column_if_missing(conn, "giveaways", "rollover_pool", "rollover_pool INTEGER NOT NULL DEFAULT 0")
+        add_column_if_missing(conn, "giveaways", "status", "status TEXT NOT NULL DEFAULT 'open'")
+        add_column_if_missing(conn, "giveaways", "draw_at", "draw_at INTEGER")
+        add_column_if_missing(conn, "giveaways", "winner_player_id", "winner_player_id INTEGER")
+        add_column_if_missing(conn, "giveaways", "winner_name", "winner_name TEXT")
+        add_column_if_missing(conn, "giveaways", "created_by", "created_by INTEGER")
+        add_column_if_missing(conn, "giveaways", "created_at", "created_at INTEGER NOT NULL DEFAULT 0")
+        add_column_if_missing(conn, "giveaways", "updated_at", "updated_at INTEGER NOT NULL DEFAULT 0")
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,6 +101,7 @@ def init_db():
                 UNIQUE(giveaway_id, player_id)
             )
         """)
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
                 token TEXT PRIMARY KEY,
@@ -80,42 +110,65 @@ def init_db():
                 created_at INTEGER NOT NULL
             )
         """)
+
+        t = now_ts()
+
+        # Clean up any old rows with zero timestamps.
+        conn.execute("UPDATE giveaways SET created_at=? WHERE created_at IS NULL OR created_at=0", (t,))
+        conn.execute("UPDATE giveaways SET updated_at=? WHERE updated_at IS NULL OR updated_at=0", (t,))
+
         cur = conn.execute("SELECT id FROM giveaways ORDER BY id DESC LIMIT 1")
         if not cur.fetchone():
-            t = now_ts()
             conn.execute("""
                 INSERT INTO giveaways
-                (title, prize_label, total_pool, rollover_pool, status, draw_at, created_by, created_at, updated_at)
-                VALUES (?, ?, ?, ?, 'open', NULL, ?, ?, ?)
-            """, ("Rolling Giveaway", "Faction/Event Prize", 0, 0, ADMIN_PLAYER_ID, t, t))
+                (title, prize_label, total_pool, player_percent, rollover_percent, reserve_percent,
+                 rollover_pool, status, draw_at, created_by, created_at, updated_at)
+                VALUES (?, ?, ?, 60, 20, 20, ?, 'open', NULL, ?, ?, ?)
+            """, ("Fries91's Giveaway", "Faction/Event Prize", 0, 0, ADMIN_PLAYER_ID, t, t))
 
 
 init_db()
 
 
+@app.errorhandler(Exception)
+def handle_exception(exc):
+    # Keeps the overlay from getting plain HTML 500 pages.
+    app.logger.exception("Unhandled server error")
+    return jsonify({
+        "ok": False,
+        "error": "Server error. Check Render logs.",
+        "detail": str(exc)
+    }), 500
+
+
 def clean_giveaway(row, include_private=False):
     total = int(row["total_pool"] or 0)
-    player_cut = total * int(row["player_percent"]) // 100
-    rollover_cut = total * int(row["rollover_percent"]) // 100
-    reserve_cut = total * int(row["reserve_percent"]) // 100
+    player_percent = int(row["player_percent"] or 60)
+    rollover_percent = int(row["rollover_percent"] or 20)
+    reserve_percent = int(row["reserve_percent"] or 20)
+
+    player_cut = total * player_percent // 100
+    rollover_cut = total * rollover_percent // 100
+    reserve_cut = total * reserve_percent // 100
+
     payload = {
         "id": row["id"],
-        "title": row["title"],
-        "prize_label": row["prize_label"],
+        "title": row["title"] or "Fries91's Giveaway",
+        "prize_label": row["prize_label"] or "Prize",
         "total_pool": total,
-        "player_percent": row["player_percent"],
-        "rollover_percent": row["rollover_percent"],
-        "status": row["status"],
+        "player_percent": player_percent,
+        "rollover_percent": rollover_percent,
+        "status": row["status"] or "open",
         "draw_at": row["draw_at"],
         "winner_player_id": row["winner_player_id"],
         "winner_name": row["winner_name"],
-        "rollover_pool": row["rollover_pool"],
+        "rollover_pool": int(row["rollover_pool"] or 0),
         "player_cut": player_cut,
         "rollover_cut": rollover_cut,
         "entry_is_free": True,
     }
     if include_private:
-        payload["reserve_percent"] = row["reserve_percent"]
+        payload["reserve_percent"] = reserve_percent
         payload["reserve_cut"] = reserve_cut
         payload["admin_player_id"] = ADMIN_PLAYER_ID
     return payload
@@ -166,7 +219,9 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return jsonify({"ok": True, "time": now_ts()})
+    with db() as conn:
+        g_count = conn.execute("SELECT COUNT(*) AS c FROM giveaways").fetchone()["c"]
+    return jsonify({"ok": True, "app": APP_NAME, "time": now_ts(), "giveaways": int(g_count)})
 
 
 @app.post("/api/login")
@@ -206,8 +261,10 @@ def login():
                 is_admin=excluded.is_admin,
                 updated_at=excluded.updated_at
         """, (player_id, name, api_key, is_admin, t, t))
-        conn.execute("INSERT INTO sessions (token, player_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
-                     (token, player_id, expires, t))
+        conn.execute(
+            "INSERT INTO sessions (token, player_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+            (token, player_id, expires, t)
+        )
 
     return jsonify({"ok": True, "token": token, "user": {"player_id": player_id, "name": name, "is_admin": bool(is_admin)}})
 
@@ -216,13 +273,27 @@ def login():
 def state():
     session = get_session()
     include_private = bool(session and int(session["player_id"]) == ADMIN_PLAYER_ID)
+
     with db() as conn:
         g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
+        if not g:
+            t = now_ts()
+            conn.execute("""
+                INSERT INTO giveaways
+                (title, prize_label, total_pool, player_percent, rollover_percent, reserve_percent,
+                 rollover_pool, status, draw_at, created_by, created_at, updated_at)
+                VALUES (?, ?, ?, 60, 20, 20, ?, 'open', NULL, ?, ?, ?)
+            """, ("Fries91's Giveaway", "Faction/Event Prize", 0, 0, ADMIN_PLAYER_ID, t, t))
+            g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
+
         count = conn.execute("SELECT COUNT(*) AS c FROM entries WHERE giveaway_id = ?", (g["id"],)).fetchone()["c"]
         entered = False
         if session:
-            entered = bool(conn.execute("SELECT id FROM entries WHERE giveaway_id = ? AND player_id = ?",
-                                        (g["id"], session["player_id"])).fetchone())
+            entered = bool(conn.execute(
+                "SELECT id FROM entries WHERE giveaway_id = ? AND player_id = ?",
+                (g["id"], session["player_id"])
+            ).fetchone())
+
     payload = clean_giveaway(g, include_private=include_private)
     payload["entry_count"] = int(count)
     payload["entered"] = entered
@@ -265,7 +336,7 @@ def admin_entries(session):
 @require_admin
 def admin_update_giveaway(session):
     data = request.get_json(force=True, silent=True) or {}
-    title = (data.get("title") or "Rolling Giveaway").strip()
+    title = (data.get("title") or "Fries91's Giveaway").strip()
     prize_label = (data.get("prize_label") or "Faction/Event Prize").strip()
     total_pool = int(data.get("total_pool") or 0)
     rollover_pool = int(data.get("rollover_pool") or 0)
@@ -307,7 +378,7 @@ def admin_draw(session):
 @require_admin
 def admin_roll(session):
     data = request.get_json(force=True, silent=True) or {}
-    title = (data.get("title") or "Rolling Giveaway").strip()
+    title = (data.get("title") or "Fries91's Giveaway").strip()
     prize_label = (data.get("prize_label") or "Faction/Event Prize").strip()
     total_pool = int(data.get("total_pool") or 0)
     rollover_pool = int(data.get("rollover_pool") or 0)
@@ -316,8 +387,9 @@ def admin_roll(session):
     with db() as conn:
         conn.execute("""
             INSERT INTO giveaways
-            (title, prize_label, total_pool, rollover_pool, status, draw_at, created_by, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 'open', NULL, ?, ?, ?)
+            (title, prize_label, total_pool, player_percent, rollover_percent, reserve_percent,
+             rollover_pool, status, draw_at, created_by, created_at, updated_at)
+            VALUES (?, ?, ?, 60, 20, 20, ?, 'open', NULL, ?, ?, ?)
         """, (title, prize_label, total_pool, rollover_pool, session["player_id"], t, t))
 
     return jsonify({"ok": True})
