@@ -17,8 +17,10 @@ REQUEST_TIMEOUT = float(os.environ.get("REQUEST_TIMEOUT", "12"))
 app = Flask(__name__)
 CORS(app, supports_credentials=False)
 
+
 def now_ts():
     return int(time.time())
+
 
 def db():
     folder = os.path.dirname(DB_PATH)
@@ -28,23 +30,39 @@ def db():
     conn.row_factory = sqlite3.Row
     return conn
 
-def table_exists(conn, table_name):
-    return bool(conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,)).fetchone())
 
-def table_columns(conn, table_name):
-    if not table_exists(conn, table_name):
+def table_exists(conn, name):
+    return bool(conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (name,)
+    ).fetchone())
+
+
+def cols(conn, name):
+    if not table_exists(conn, name):
         return set()
-    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+    return {r["name"] for r in conn.execute(f"PRAGMA table_info({name})").fetchall()}
 
-def add_column_if_missing(conn, table_name, column_name, column_sql):
-    if column_name not in table_columns(conn, table_name):
-        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
 
-def repair_users_table(conn):
-    cols = table_columns(conn, "users")
-    if not cols:
+def archive_table(conn, name):
+    if table_exists(conn, name):
+        conn.execute(f"ALTER TABLE {name} RENAME TO {name}_old_{now_ts()}")
+
+
+def add_col(conn, table, col, sql):
+    if col not in cols(conn, table):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {sql}")
+
+
+def ensure_users(conn):
+    c = cols(conn, "users")
+    if c and "player_id" not in c:
+        archive_table(conn, "users")
+        c = set()
+
+    if not c:
         conn.execute("""
-            CREATE TABLE users (
+            CREATE TABLE IF NOT EXISTS users (
                 player_id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
                 api_key TEXT,
@@ -54,70 +72,79 @@ def repair_users_table(conn):
             )
         """)
         return
-    if "player_id" in cols:
-        add_column_if_missing(conn, "users", "name", "name TEXT NOT NULL DEFAULT 'Unknown'")
-        add_column_if_missing(conn, "users", "api_key", "api_key TEXT")
-        add_column_if_missing(conn, "users", "is_admin", "is_admin INTEGER NOT NULL DEFAULT 0")
-        add_column_if_missing(conn, "users", "created_at", "created_at INTEGER NOT NULL DEFAULT 0")
-        add_column_if_missing(conn, "users", "updated_at", "updated_at INTEGER NOT NULL DEFAULT 0")
-        return
 
-    # Broken old schema: rename and create correct users table.
-    t = now_ts()
-    conn.execute("ALTER TABLE users RENAME TO users_old_broken")
-    conn.execute("""
-        CREATE TABLE users (
-            player_id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            api_key TEXT,
-            is_admin INTEGER NOT NULL DEFAULT 0,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        )
-    """)
+    add_col(conn, "users", "name", "name TEXT NOT NULL DEFAULT 'Unknown'")
+    add_col(conn, "users", "api_key", "api_key TEXT")
+    add_col(conn, "users", "is_admin", "is_admin INTEGER NOT NULL DEFAULT 0")
+    add_col(conn, "users", "created_at", "created_at INTEGER NOT NULL DEFAULT 0")
+    add_col(conn, "users", "updated_at", "updated_at INTEGER NOT NULL DEFAULT 0")
 
-def init_db():
-    with db() as conn:
-        repair_users_table(conn)
 
+def ensure_sessions(conn):
+    c = cols(conn, "sessions")
+    needed = {"token", "player_id", "expires_at", "created_at"}
+    if c and not needed.issubset(c):
+        archive_table(conn, "sessions")
+        c = set()
+
+    if not c:
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS giveaways (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL DEFAULT 'Fries91''s Giveaway',
-                prize_label TEXT NOT NULL DEFAULT 'Prize',
-                total_pool INTEGER NOT NULL DEFAULT 0,
-                player_percent INTEGER NOT NULL DEFAULT 60,
-                rollover_percent INTEGER NOT NULL DEFAULT 20,
-                reserve_percent INTEGER NOT NULL DEFAULT 20,
-                rollover_pool INTEGER NOT NULL DEFAULT 0,
-                status TEXT NOT NULL DEFAULT 'open',
-                draw_at INTEGER,
-                winner_player_id INTEGER,
-                winner_name TEXT,
-                created_by INTEGER,
-                created_at INTEGER NOT NULL DEFAULT 0,
-                updated_at INTEGER NOT NULL DEFAULT 0
+            CREATE TABLE IF NOT EXISTS sessions (
+                token TEXT PRIMARY KEY,
+                player_id INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
             )
         """)
 
-        for col, sql in [
-            ("title", "title TEXT NOT NULL DEFAULT 'Fries91''s Giveaway'"),
-            ("prize_label", "prize_label TEXT NOT NULL DEFAULT 'Prize'"),
-            ("total_pool", "total_pool INTEGER NOT NULL DEFAULT 0"),
-            ("player_percent", "player_percent INTEGER NOT NULL DEFAULT 60"),
-            ("rollover_percent", "rollover_percent INTEGER NOT NULL DEFAULT 20"),
-            ("reserve_percent", "reserve_percent INTEGER NOT NULL DEFAULT 20"),
-            ("rollover_pool", "rollover_pool INTEGER NOT NULL DEFAULT 0"),
-            ("status", "status TEXT NOT NULL DEFAULT 'open'"),
-            ("draw_at", "draw_at INTEGER"),
-            ("winner_player_id", "winner_player_id INTEGER"),
-            ("winner_name", "winner_name TEXT"),
-            ("created_by", "created_by INTEGER"),
-            ("created_at", "created_at INTEGER NOT NULL DEFAULT 0"),
-            ("updated_at", "updated_at INTEGER NOT NULL DEFAULT 0"),
-        ]:
-            add_column_if_missing(conn, "giveaways", col, sql)
 
+def ensure_giveaways(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS giveaways (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL DEFAULT 'Fries91''s Giveaway',
+            prize_label TEXT NOT NULL DEFAULT 'Prize',
+            total_pool INTEGER NOT NULL DEFAULT 0,
+            player_percent INTEGER NOT NULL DEFAULT 60,
+            rollover_percent INTEGER NOT NULL DEFAULT 20,
+            reserve_percent INTEGER NOT NULL DEFAULT 20,
+            rollover_pool INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'open',
+            draw_at INTEGER,
+            winner_player_id INTEGER,
+            winner_name TEXT,
+            created_by INTEGER,
+            created_at INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    for col, sql in [
+        ("title", "title TEXT NOT NULL DEFAULT 'Fries91''s Giveaway'"),
+        ("prize_label", "prize_label TEXT NOT NULL DEFAULT 'Prize'"),
+        ("total_pool", "total_pool INTEGER NOT NULL DEFAULT 0"),
+        ("player_percent", "player_percent INTEGER NOT NULL DEFAULT 60"),
+        ("rollover_percent", "rollover_percent INTEGER NOT NULL DEFAULT 20"),
+        ("reserve_percent", "reserve_percent INTEGER NOT NULL DEFAULT 20"),
+        ("rollover_pool", "rollover_pool INTEGER NOT NULL DEFAULT 0"),
+        ("status", "status TEXT NOT NULL DEFAULT 'open'"),
+        ("draw_at", "draw_at INTEGER"),
+        ("winner_player_id", "winner_player_id INTEGER"),
+        ("winner_name", "winner_name TEXT"),
+        ("created_by", "created_by INTEGER"),
+        ("created_at", "created_at INTEGER NOT NULL DEFAULT 0"),
+        ("updated_at", "updated_at INTEGER NOT NULL DEFAULT 0"),
+    ]:
+        add_col(conn, "giveaways", col, sql)
+
+
+def ensure_entries(conn):
+    c = cols(conn, "entries")
+    needed = {"id", "giveaway_id", "player_id", "name", "created_at"}
+    if c and not needed.issubset(c):
+        archive_table(conn, "entries")
+        c = set()
+
+    if not c:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -128,16 +155,28 @@ def init_db():
                 UNIQUE(giveaway_id, player_id)
             )
         """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS sessions (
-                token TEXT PRIMARY KEY,
-                player_id INTEGER NOT NULL,
-                expires_at INTEGER NOT NULL,
-                created_at INTEGER NOT NULL
-            )
-        """)
-        conn.execute("DELETE FROM sessions WHERE player_id NOT IN (SELECT player_id FROM users)")
+
+
+def init_db():
+    with db() as conn:
+        ensure_users(conn)
+        ensure_sessions(conn)
+        ensure_giveaways(conn)
+        ensure_entries(conn)
+
+        # IMPORTANT: only run cleanup when both tables are verified correct.
+        if "player_id" in cols(conn, "sessions") and "player_id" in cols(conn, "users"):
+            conn.execute("DELETE FROM sessions WHERE player_id NOT IN (SELECT player_id FROM users)")
+
         t = now_ts()
+        conn.execute("""
+            UPDATE giveaways
+            SET title=?
+            WHERE title IS NULL OR title='' OR title='Rolling Giveaway' OR title='Torn Rolling Giveaway'
+        """, ("Fries91's Giveaway",))
+        conn.execute("UPDATE giveaways SET created_at=? WHERE created_at IS NULL OR created_at=0", (t,))
+        conn.execute("UPDATE giveaways SET updated_at=? WHERE updated_at IS NULL OR updated_at=0", (t,))
+
         if not conn.execute("SELECT id FROM giveaways ORDER BY id DESC LIMIT 1").fetchone():
             conn.execute("""
                 INSERT INTO giveaways
@@ -146,110 +185,130 @@ def init_db():
                 VALUES (?, ?, 0, 60, 20, 20, 0, 'open', NULL, ?, ?, ?)
             """, ("Fries91's Giveaway", "Faction/Event Prize", ADMIN_PLAYER_ID, t, t))
 
+
 init_db()
 
+
 @app.errorhandler(Exception)
-def handle_exception(exc):
-    app.logger.exception("Unhandled server error")
+def all_errors(exc):
+    app.logger.exception("Server error")
     return jsonify({"ok": False, "error": "Server error. Check Render logs.", "detail": str(exc)}), 500
 
-def get_session():
+
+def session():
     token = request.headers.get("X-Giveaway-Session", "").strip()
     if not token:
         return None
     with db() as conn:
+        ensure_users(conn)
+        ensure_sessions(conn)
         row = conn.execute("""
             SELECT s.token, s.player_id, s.expires_at, u.name, u.is_admin
-            FROM sessions s JOIN users u ON u.player_id = s.player_id
+            FROM sessions s
+            JOIN users u ON u.player_id = s.player_id
             WHERE s.token = ?
         """, (token,)).fetchone()
         if not row or int(row["expires_at"]) < now_ts():
             return None
         return dict(row)
 
-def require_login(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        session = get_session()
-        if not session:
-            return jsonify({"ok": False, "error": "Login required"}), 401
-        return fn(session, *args, **kwargs)
-    return wrapper
 
-def require_admin(fn):
+def login_required(fn):
     @wraps(fn)
-    def wrapper(*args, **kwargs):
-        session = get_session()
-        if not session:
+    def wrap(*a, **kw):
+        s = session()
+        if not s:
             return jsonify({"ok": False, "error": "Login required"}), 401
-        if int(session["player_id"]) != ADMIN_PLAYER_ID:
+        return fn(s, *a, **kw)
+    return wrap
+
+
+def admin_required(fn):
+    @wraps(fn)
+    def wrap(*a, **kw):
+        s = session()
+        if not s:
+            return jsonify({"ok": False, "error": "Login required"}), 401
+        if int(s["player_id"]) != ADMIN_PLAYER_ID:
             return jsonify({"ok": False, "error": "Admin only"}), 403
-        return fn(session, *args, **kwargs)
-    return wrapper
+        return fn(s, *a, **kw)
+    return wrap
 
-def clean_giveaway(row, include_private=False):
-    total = int(row["total_pool"] or 0)
-    player_percent = int(row["player_percent"] or 60)
-    rollover_percent = int(row["rollover_percent"] or 20)
-    reserve_percent = int(row["reserve_percent"] or 20)
-    payload = {
-        "id": row["id"],
-        "title": row["title"] or "Fries91's Giveaway",
-        "prize_label": row["prize_label"] or "Prize",
+
+def clean_giveaway(g, private=False):
+    total = int(g["total_pool"] or 0)
+    pp = int(g["player_percent"] or 60)
+    rp = int(g["rollover_percent"] or 20)
+    ap = int(g["reserve_percent"] or 20)
+    out = {
+        "id": g["id"],
+        "title": g["title"] or "Fries91's Giveaway",
+        "prize_label": g["prize_label"] or "Prize",
         "total_pool": total,
-        "player_percent": player_percent,
-        "rollover_percent": rollover_percent,
-        "status": row["status"] or "open",
-        "draw_at": row["draw_at"],
-        "winner_player_id": row["winner_player_id"],
-        "winner_name": row["winner_name"],
-        "rollover_pool": int(row["rollover_pool"] or 0),
-        "player_cut": total * player_percent // 100,
-        "rollover_cut": total * rollover_percent // 100,
+        "player_percent": pp,
+        "rollover_percent": rp,
+        "status": g["status"] or "open",
+        "draw_at": g["draw_at"],
+        "winner_player_id": g["winner_player_id"],
+        "winner_name": g["winner_name"],
+        "rollover_pool": int(g["rollover_pool"] or 0),
+        "player_cut": total * pp // 100,
+        "rollover_cut": total * rp // 100,
         "entry_is_free": True,
     }
-    if include_private:
-        payload["reserve_percent"] = reserve_percent
-        payload["reserve_cut"] = total * reserve_percent // 100
-        payload["admin_player_id"] = ADMIN_PLAYER_ID
-    return payload
+    if private:
+        out["reserve_percent"] = ap
+        out["reserve_cut"] = total * ap // 100
+        out["admin_player_id"] = ADMIN_PLAYER_ID
+    return out
+
 
 @app.get("/")
 def root():
     return jsonify({"ok": True, "app": APP_NAME, "mode": "free-entry-giveaway"})
 
+
 @app.get("/api/health")
 def health():
     with db() as conn:
-        return jsonify({"ok": True, "app": APP_NAME, "time": now_ts(), "admin": ADMIN_PLAYER_ID, "users_columns": sorted(list(table_columns(conn, "users")))})
+        return jsonify({
+            "ok": True,
+            "app": APP_NAME,
+            "time": now_ts(),
+            "admin": ADMIN_PLAYER_ID,
+            "users_columns": sorted(list(cols(conn, "users"))),
+            "sessions_columns": sorted(list(cols(conn, "sessions"))),
+        })
+
 
 @app.post("/api/login")
-def login():
+def api_login():
     data = request.get_json(force=True, silent=True) or {}
-    api_key = (data.get("api_key") or "").strip()
-    if not api_key:
+    key = (data.get("api_key") or "").strip()
+    if not key:
         return jsonify({"ok": False, "error": "API key required"}), 400
 
     try:
-        r = requests.get(f"{TORN_API_BASE}/user/?selections=profile&key={api_key}", timeout=REQUEST_TIMEOUT)
-        profile = r.json()
+        r = requests.get(f"{TORN_API_BASE}/user/?selections=profile&key={key}", timeout=REQUEST_TIMEOUT)
+        prof = r.json()
     except Exception as exc:
         return jsonify({"ok": False, "error": f"Could not reach Torn API: {exc}"}), 502
 
-    if profile.get("error"):
-        return jsonify({"ok": False, "error": profile["error"].get("error", "Torn API error")}), 400
+    if prof.get("error"):
+        return jsonify({"ok": False, "error": prof["error"].get("error", "Torn API error")}), 400
 
-    player_id = int(profile.get("player_id") or profile.get("id") or 0)
-    name = profile.get("name") or f"Player {player_id}"
-    if not player_id:
+    pid = int(prof.get("player_id") or prof.get("id") or 0)
+    name = prof.get("name") or f"Player {pid}"
+    if not pid:
         return jsonify({"ok": False, "error": "Could not read player id from Torn API"}), 400
 
-    is_admin = 1 if player_id == ADMIN_PLAYER_ID else 0
+    is_admin = 1 if pid == ADMIN_PLAYER_ID else 0
     token = secrets.token_urlsafe(32)
     t = now_ts()
 
     with db() as conn:
-        repair_users_table(conn)
+        ensure_users(conn)
+        ensure_sessions(conn)
         conn.execute("""
             INSERT INTO users (player_id, name, api_key, is_admin, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -258,53 +317,67 @@ def login():
                 api_key=excluded.api_key,
                 is_admin=excluded.is_admin,
                 updated_at=excluded.updated_at
-        """, (player_id, name, api_key, is_admin, t, t))
-        conn.execute("INSERT INTO sessions (token, player_id, expires_at, created_at) VALUES (?, ?, ?, ?)", (token, player_id, t + 2592000, t))
+        """, (pid, name, key, is_admin, t, t))
+        conn.execute("INSERT INTO sessions (token, player_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+                     (token, pid, t + 60 * 60 * 24 * 30, t))
 
-    return jsonify({"ok": True, "token": token, "user": {"player_id": player_id, "name": name, "is_admin": bool(is_admin)}})
+    return jsonify({"ok": True, "token": token, "user": {"player_id": pid, "name": name, "is_admin": bool(is_admin)}})
+
 
 @app.get("/api/state")
 def state():
-    session = get_session()
-    include_private = bool(session and int(session["player_id"]) == ADMIN_PLAYER_ID)
+    s = session()
+    private = bool(s and int(s["player_id"]) == ADMIN_PLAYER_ID)
+
     with db() as conn:
         g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
-        count = conn.execute("SELECT COUNT(*) AS c FROM entries WHERE giveaway_id = ?", (g["id"],)).fetchone()["c"]
+        if not g:
+            init_db()
+            g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
+
+        count = conn.execute("SELECT COUNT(*) AS c FROM entries WHERE giveaway_id=?", (g["id"],)).fetchone()["c"]
         entered = False
-        user_payload = None
-        if session:
-            entered = bool(conn.execute("SELECT id FROM entries WHERE giveaway_id = ? AND player_id = ?", (g["id"], session["player_id"])).fetchone())
-            user_payload = {"player_id": session["player_id"], "name": session["name"], "is_admin": include_private}
-    payload = clean_giveaway(g, include_private=include_private)
+        user = None
+        if s:
+            entered = bool(conn.execute("SELECT id FROM entries WHERE giveaway_id=? AND player_id=?",
+                                        (g["id"], s["player_id"])).fetchone())
+            user = {"player_id": s["player_id"], "name": s["name"], "is_admin": private}
+
+    payload = clean_giveaway(g, private)
     payload["entry_count"] = int(count)
     payload["entered"] = entered
-    payload["is_admin"] = include_private
-    return jsonify({"ok": True, "giveaway": payload, "user": user_payload})
+    payload["is_admin"] = private
+    return jsonify({"ok": True, "giveaway": payload, "user": user})
+
 
 @app.post("/api/enter")
-@require_login
-def enter(session):
+@login_required
+def enter(s):
     with db() as conn:
         g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
         if not g or g["status"] != "open":
             return jsonify({"ok": False, "error": "Giveaway is not open"}), 400
         try:
-            conn.execute("INSERT INTO entries (giveaway_id, player_id, name, created_at) VALUES (?, ?, ?, ?)", (g["id"], session["player_id"], session["name"], now_ts()))
+            conn.execute("INSERT INTO entries (giveaway_id, player_id, name, created_at) VALUES (?, ?, ?, ?)",
+                         (g["id"], s["player_id"], s["name"], now_ts()))
         except sqlite3.IntegrityError:
             return jsonify({"ok": True, "message": "You are already entered"})
     return jsonify({"ok": True, "message": "Entry saved"})
 
+
 @app.get("/api/admin/entries")
-@require_admin
-def admin_entries(session):
+@admin_required
+def admin_entries(s):
     with db() as conn:
         g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
-        rows = conn.execute("SELECT player_id, name, created_at FROM entries WHERE giveaway_id = ? ORDER BY created_at ASC", (g["id"],)).fetchall()
+        rows = conn.execute("SELECT player_id, name, created_at FROM entries WHERE giveaway_id=? ORDER BY created_at ASC",
+                            (g["id"],)).fetchall()
     return jsonify({"ok": True, "entries": [dict(r) for r in rows]})
 
+
 @app.post("/api/admin/giveaway")
-@require_admin
-def admin_update_giveaway(session):
+@admin_required
+def admin_save(s):
     data = request.get_json(force=True, silent=True) or {}
     t = now_ts()
     with db() as conn:
@@ -320,42 +393,47 @@ def admin_update_giveaway(session):
             int(data.get("rollover_pool") or 0),
             int(data["draw_at"]) if str(data.get("draw_at") or "").isdigit() else None,
             t,
-            g["id"]
+            g["id"],
         ))
     return jsonify({"ok": True})
 
+
 @app.post("/api/admin/draw")
-@require_admin
-def admin_draw(session):
+@admin_required
+def admin_draw(s):
     with db() as conn:
         g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
-        entries = conn.execute("SELECT player_id, name FROM entries WHERE giveaway_id = ?", (g["id"],)).fetchall()
-        if not entries:
+        rows = conn.execute("SELECT player_id, name FROM entries WHERE giveaway_id=?", (g["id"],)).fetchall()
+        if not rows:
             return jsonify({"ok": False, "error": "No entries to draw"}), 400
-        winner = secrets.choice(entries)
-        conn.execute("UPDATE giveaways SET status='drawn', winner_player_id=?, winner_name=?, updated_at=? WHERE id=?", (winner["player_id"], winner["name"], now_ts(), g["id"]))
+        winner = secrets.choice(rows)
+        conn.execute("UPDATE giveaways SET status='drawn', winner_player_id=?, winner_name=?, updated_at=? WHERE id=?",
+                     (winner["player_id"], winner["name"], now_ts(), g["id"]))
     return jsonify({"ok": True, "winner": {"player_id": winner["player_id"], "name": winner["name"]}})
 
+
 @app.post("/api/admin/roll")
-@require_admin
-def admin_roll(session):
+@admin_required
+def admin_roll(s):
     data = request.get_json(force=True, silent=True) or {}
     t = now_ts()
     with db() as conn:
         conn.execute("""
             INSERT INTO giveaways
-            (title, prize_label, total_pool, player_percent, rollover_percent, reserve_percent, rollover_pool, status, draw_at, created_by, created_at, updated_at)
+            (title, prize_label, total_pool, player_percent, rollover_percent, reserve_percent,
+             rollover_pool, status, draw_at, created_by, created_at, updated_at)
             VALUES (?, ?, ?, 60, 20, 20, ?, 'open', NULL, ?, ?, ?)
         """, (
             (data.get("title") or "Fries91's Giveaway").strip(),
             (data.get("prize_label") or "Faction/Event Prize").strip(),
             int(data.get("total_pool") or 0),
             int(data.get("rollover_pool") or 0),
-            session["player_id"],
+            s["player_id"],
             t,
-            t
+            t,
         ))
     return jsonify({"ok": True})
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")))
