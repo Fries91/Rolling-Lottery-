@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Rolling Giveaway - Fries91
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.0
+// @version      1.0.1
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -65,15 +65,20 @@
   }
 
   function ensureButton() {
-    if ($("#fries-giveaway-btn")) return;
+    if ($("#fries-giveaway-topbar")) return;
 
-    const btn = document.createElement("button");
-    btn.id = "fries-giveaway-btn";
-    btn.textContent = "🎁";
-    btn.title = "Rolling Giveaway";
-    btn.addEventListener("click", togglePanel);
+    const bar = document.createElement("button");
+    bar.id = "fries-giveaway-topbar";
+    bar.type = "button";
+    bar.title = "Open Torn Giveaway";
+    bar.innerHTML = `
+      <span class="fg-top-icon">🏆</span>
+      <span class="fg-top-text">Torn Giveaway</span>
+      <span class="fg-top-marquee">Free rolling giveaway • Tap to open</span>
+    `;
+    bar.addEventListener("click", togglePanel);
 
-    document.body.appendChild(btn);
+    document.body.appendChild(bar);
   }
 
   function ensurePanel() {
@@ -325,17 +330,61 @@
   }
 
   GM_addStyle(`
-    #fries-giveaway-btn {
-      position: fixed; right: 14px; bottom: 82px; z-index: 999998;
-      width: 44px; height: 44px; border-radius: 999px;
-      border: 1px solid rgba(255,255,255,.28);
-      background: linear-gradient(135deg,#24143a,#5a2b91);
-      color: white; font-size: 22px; cursor: pointer;
-      box-shadow: 0 10px 28px rgba(0,0,0,.35);
+    #fries-giveaway-topbar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 999998;
+      min-height: 34px;
+      width: 100%;
+      border: 0;
+      border-bottom: 1px solid rgba(255,255,255,.16);
+      background: linear-gradient(90deg,#18111f,#321d50,#18111f);
+      color: #fff;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 6px 12px;
+      box-shadow: 0 5px 18px rgba(0,0,0,.35);
+      font-family: Arial, sans-serif;
+      overflow: hidden;
+    }
+    .fg-top-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(circle at 35% 20%,#ffeaa5,#b77414 60%,#6b3a08);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.45), 0 0 12px rgba(255,190,70,.25);
+      color: #1b1205;
+      font-size: 15px;
+      flex: 0 0 auto;
+    }
+    .fg-top-text {
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      font-size: 13px;
+      color: #ffe9a8;
+      text-shadow: 0 1px 1px rgba(0,0,0,.7);
+      flex: 0 0 auto;
+    }
+    .fg-top-marquee {
+      color: #d9d1f5;
+      font-size: 12px;
+      white-space: nowrap;
+      opacity: .95;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     #fries-giveaway-panel {
-      position: fixed; right: 12px; bottom: 138px; z-index: 999999;
-      width: min(430px, calc(100vw - 24px)); max-height: min(720px, calc(100vh - 170px));
+      position: fixed; right: 12px; top: 46px; z-index: 999999;
+      width: min(430px, calc(100vw - 24px)); max-height: calc(100vh - 58px);
       display: none; overflow: hidden; border-radius: 18px;
       background: #11131a; color: #f4f2ff;
       border: 1px solid rgba(255,255,255,.16);
@@ -350,7 +399,7 @@
     .fg-tabs { display:flex; gap: 6px; padding: 10px; background:#151722; border-bottom:1px solid rgba(255,255,255,.1); }
     .fg-tabs button { flex:1; padding: 9px 8px; border-radius: 10px; border:1px solid rgba(255,255,255,.12); background:#202333; color:#e9e3ff; cursor:pointer; }
     .fg-tabs button.active { background:#6b38b6; border-color:#9c6cff; }
-    .fg-body { padding: 12px; overflow:auto; max-height: calc(min(720px, calc(100vh - 170px)) - 112px); }
+    .fg-body { padding: 12px; overflow:auto; max-height: calc(100vh - 180px); }
     .fg-hero { padding:18px; border-radius:18px; background: radial-gradient(circle at top left,#7143bd,#21152f 55%); border:1px solid rgba(255,255,255,.16); margin-bottom: 10px; }
     .fg-kicker { font-size:11px; letter-spacing:.1em; color:#d7c6ff; }
     .fg-hero h2 { margin: 8px 0; font-size: 22px; }
@@ -370,8 +419,10 @@
     .fg-split { display:grid; gap:6px; background:#11131a; border-radius:12px; padding:10px; margin:10px 0; }
     .fg-entry { padding:8px; border-bottom:1px solid rgba(255,255,255,.1); }
     @media (max-width: 520px) {
-      #fries-giveaway-panel { right: 8px; left: 8px; width: auto; bottom: 82px; max-height: calc(100vh - 96px); }
-      #fries-giveaway-btn { right: 10px; bottom: 28px; }
+      #fries-giveaway-topbar { min-height: 36px; padding: 6px 8px; gap: 7px; }
+      .fg-top-text { font-size: 12px; }
+      .fg-top-marquee { font-size: 11px; max-width: 45vw; }
+      #fries-giveaway-panel { right: 8px; left: 8px; width: auto; top: 48px; max-height: calc(100vh - 60px); }
       .fg-grid { grid-template-columns:1fr; }
     }
   `);
