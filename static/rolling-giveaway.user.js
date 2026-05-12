@@ -15,7 +15,7 @@
 (function () {
   "use strict";
 
-  const API_BASE = "https://YOUR-RENDER-APP.onrender.com";
+  const API_BASE = "https://sinner-s-lottery.onrender.com";
   const ADMIN_ID = 3679030;
   const LS_KEY = "fries91_giveaway_session_v1";
   const KEY_KEY = "fries91_giveaway_api_key_v1";
