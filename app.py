@@ -1,299 +1,328 @@
 import os
-import secrets
+import sqlite3
 import time
+import secrets
 from functools import wraps
 
 import requests
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
-import db
+APP_NAME = "Torn Rolling Giveaway"
+ADMIN_PLAYER_ID = int(os.environ.get("ADMIN_PLAYER_ID", "3679030"))
+DB_PATH = os.environ.get("DB_PATH", "giveaway.db")
+TORN_API_BASE = os.environ.get("TORN_API_BASE", "https://api.torn.com")
+REQUEST_TIMEOUT = float(os.environ.get("REQUEST_TIMEOUT", "12"))
 
-TORN_API_URL = os.environ.get(
-    'TORN_API_URL',
-    'https://api.torn.com/user/?selections=profile&key={key}',
-)
-PUBLIC_BASE_URL = os.environ.get('PUBLIC_BASE_URL', '').rstrip('/')
-SESSION_TTL_SECONDS = int(os.environ.get('SESSION_TTL_SECONDS', '2592000'))
-ADMIN_USER_IDS = {
-    int(x.strip())
-    for x in os.environ.get('ADMIN_USER_IDS', '').split(',')
-    if x.strip().isdigit()
-}
-ALLOWED_SCRIPT_ORIGINS = [
-    x.strip()
-    for x in os.environ.get(
-        'ALLOWED_SCRIPT_ORIGINS',
-        'https://www.torn.com,https://torn.com',
-    ).split(',')
-    if x.strip()
-]
-WHEEL_PUBLIC_ENTRANTS = os.environ.get('WHEEL_PUBLIC_ENTRANTS', '1').strip().lower() not in {
-    '0', 'false', 'no', 'off'
-}
+app = Flask(__name__)
+CORS(app, supports_credentials=False)
 
 
-def create_app() -> Flask:
-    app = Flask(__name__)
-    CORS(
-        app,
-        resources={r'/api/*': {'origins': ALLOWED_SCRIPT_ORIGINS + ['*']}},
-        supports_credentials=False,
-    )
-    db.init_db()
+def now_ts():
+    return int(time.time())
 
-    @app.get('/')
-    def root():
-        return jsonify(
-            {
-                'ok': True,
-                'service': 'Torn Giveaway Overlay',
-                'login': '/api/login',
-                'state': '/api/giveaway/current',
-                'history': '/api/giveaway/history',
-            }
-        )
 
-    @app.get('/health')
-    def health():
-        return jsonify({'ok': True, 'ts': int(time.time())})
+def db():
+    folder = os.path.dirname(DB_PATH)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-    def session_from_request():
-        token = (
-            request.headers.get('X-Session-Token')
-            or request.headers.get('Authorization', '').replace('Bearer ', '').strip()
-        )
-        if not token:
+
+def init_db():
+    with db() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                player_id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                api_key TEXT,
+                is_admin INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS giveaways (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                prize_label TEXT NOT NULL DEFAULT 'Prize',
+                total_pool INTEGER NOT NULL DEFAULT 0,
+                player_percent INTEGER NOT NULL DEFAULT 60,
+                rollover_percent INTEGER NOT NULL DEFAULT 20,
+                reserve_percent INTEGER NOT NULL DEFAULT 20,
+                rollover_pool INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'open',
+                draw_at INTEGER,
+                winner_player_id INTEGER,
+                winner_name TEXT,
+                created_by INTEGER,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                giveaway_id INTEGER NOT NULL,
+                player_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                UNIQUE(giveaway_id, player_id)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                token TEXT PRIMARY KEY,
+                player_id INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            )
+        """)
+        cur = conn.execute("SELECT id FROM giveaways ORDER BY id DESC LIMIT 1")
+        if not cur.fetchone():
+            t = now_ts()
+            conn.execute("""
+                INSERT INTO giveaways
+                (title, prize_label, total_pool, rollover_pool, status, draw_at, created_by, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'open', NULL, ?, ?, ?)
+            """, ("Rolling Giveaway", "Faction/Event Prize", 0, 0, ADMIN_PLAYER_ID, t, t))
+
+
+init_db()
+
+
+def clean_giveaway(row, include_private=False):
+    total = int(row["total_pool"] or 0)
+    player_cut = total * int(row["player_percent"]) // 100
+    rollover_cut = total * int(row["rollover_percent"]) // 100
+    reserve_cut = total * int(row["reserve_percent"]) // 100
+    payload = {
+        "id": row["id"],
+        "title": row["title"],
+        "prize_label": row["prize_label"],
+        "total_pool": total,
+        "player_percent": row["player_percent"],
+        "rollover_percent": row["rollover_percent"],
+        "status": row["status"],
+        "draw_at": row["draw_at"],
+        "winner_player_id": row["winner_player_id"],
+        "winner_name": row["winner_name"],
+        "rollover_pool": row["rollover_pool"],
+        "player_cut": player_cut,
+        "rollover_cut": rollover_cut,
+        "entry_is_free": True,
+    }
+    if include_private:
+        payload["reserve_percent"] = row["reserve_percent"]
+        payload["reserve_cut"] = reserve_cut
+        payload["admin_player_id"] = ADMIN_PLAYER_ID
+    return payload
+
+
+def get_session():
+    token = request.headers.get("X-Giveaway-Session", "").strip()
+    if not token:
+        return None
+    with db() as conn:
+        row = conn.execute("""
+            SELECT s.token, s.player_id, s.expires_at, u.name, u.is_admin
+            FROM sessions s
+            JOIN users u ON u.player_id = s.player_id
+            WHERE s.token = ?
+        """, (token,)).fetchone()
+        if not row or int(row["expires_at"]) < now_ts():
             return None
-        db.cleanup_sessions()
-        return db.get_session(token)
+        return dict(row)
 
-    def require_auth(fn):
-        @wraps(fn)
-        def wrapper(*args, **kwargs):
-            sess = session_from_request()
-            if not sess:
-                return jsonify({'ok': False, 'error': 'Authentication required'}), 401
-            request.session = sess
-            return fn(*args, **kwargs)
 
-        return wrapper
+def require_login(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        session = get_session()
+        if not session:
+            return jsonify({"ok": False, "error": "Login required"}), 401
+        return fn(session, *args, **kwargs)
+    return wrapper
 
-    def require_admin(fn):
-        @wraps(fn)
-        def wrapper(*args, **kwargs):
-            sess = session_from_request()
-            if not sess:
-                return jsonify({'ok': False, 'error': 'Authentication required'}), 401
-            if str(sess.get('role')) != 'admin':
-                return jsonify({'ok': False, 'error': 'Admin access required'}), 403
-            request.session = sess
-            return fn(*args, **kwargs)
 
-        return wrapper
+def require_admin(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        session = get_session()
+        if not session:
+            return jsonify({"ok": False, "error": "Login required"}), 401
+        if int(session["player_id"]) != ADMIN_PLAYER_ID:
+            return jsonify({"ok": False, "error": "Admin only"}), 403
+        return fn(session, *args, **kwargs)
+    return wrapper
 
-    def serialize_current(giveaway: dict | None, user_id: int | None = None):
-        if not giveaway:
-            return {
-                'giveaway': None,
-                'counts': {'total_entries': 0, 'entrant_count': 0, 'my_entries': 0},
-                'entrants': [],
-            }
 
-        entrants = db.get_entrants(giveaway['id']) if WHEEL_PUBLIC_ENTRANTS else []
-        total_entries = db.count_entries(giveaway['id'])
-        entrant_count = len(entrants) if entrants else db.count_distinct_entrants(giveaway['id'])
-        my_entries = db.count_entries_for_user(giveaway['id'], user_id) if user_id else 0
+@app.get("/")
+def root():
+    return jsonify({"ok": True, "app": APP_NAME, "mode": "free-entry-giveaway"})
 
-        return {
-            'giveaway': giveaway,
-            'counts': {
-                'total_entries': total_entries,
-                'entrant_count': entrant_count,
-                'my_entries': my_entries,
-            },
-            'entrants': entrants,
-        }
 
-    @app.post('/api/login')
-    def login():
-        payload = request.get_json(silent=True) or {}
-        api_key = str(payload.get('api_key') or '').strip()
-        if not api_key:
-            return jsonify({'ok': False, 'error': 'Missing API key'}), 400
+@app.get("/api/health")
+def health():
+    return jsonify({"ok": True, "time": now_ts()})
 
+
+@app.post("/api/login")
+def login():
+    data = request.get_json(force=True, silent=True) or {}
+    api_key = (data.get("api_key") or "").strip()
+    if not api_key:
+        return jsonify({"ok": False, "error": "API key required"}), 400
+
+    url = f"{TORN_API_BASE}/user/?selections=profile&key={api_key}"
+    try:
+        r = requests.get(url, timeout=REQUEST_TIMEOUT)
+        profile = r.json()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Could not reach Torn API: {exc}"}), 502
+
+    if profile.get("error"):
+        return jsonify({"ok": False, "error": profile["error"].get("error", "Torn API error")}), 400
+
+    player_id = int(profile.get("player_id") or profile.get("id") or 0)
+    name = profile.get("name") or f"Player {player_id}"
+    if not player_id:
+        return jsonify({"ok": False, "error": "Could not read player id from Torn API"}), 400
+
+    is_admin = 1 if player_id == ADMIN_PLAYER_ID else 0
+    token = secrets.token_urlsafe(32)
+    t = now_ts()
+    expires = t + (60 * 60 * 24 * 30)
+
+    with db() as conn:
+        conn.execute("""
+            INSERT INTO users (player_id, name, api_key, is_admin, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(player_id) DO UPDATE SET
+                name=excluded.name,
+                api_key=excluded.api_key,
+                is_admin=excluded.is_admin,
+                updated_at=excluded.updated_at
+        """, (player_id, name, api_key, is_admin, t, t))
+        conn.execute("INSERT INTO sessions (token, player_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+                     (token, player_id, expires, t))
+
+    return jsonify({"ok": True, "token": token, "user": {"player_id": player_id, "name": name, "is_admin": bool(is_admin)}})
+
+
+@app.get("/api/state")
+def state():
+    session = get_session()
+    include_private = bool(session and int(session["player_id"]) == ADMIN_PLAYER_ID)
+    with db() as conn:
+        g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
+        count = conn.execute("SELECT COUNT(*) AS c FROM entries WHERE giveaway_id = ?", (g["id"],)).fetchone()["c"]
+        entered = False
+        if session:
+            entered = bool(conn.execute("SELECT id FROM entries WHERE giveaway_id = ? AND player_id = ?",
+                                        (g["id"], session["player_id"])).fetchone())
+    payload = clean_giveaway(g, include_private=include_private)
+    payload["entry_count"] = int(count)
+    payload["entered"] = entered
+    payload["is_admin"] = include_private
+    return jsonify({"ok": True, "giveaway": payload})
+
+
+@app.post("/api/enter")
+@require_login
+def enter(session):
+    with db() as conn:
+        g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
+        if not g or g["status"] != "open":
+            return jsonify({"ok": False, "error": "Giveaway is not open"}), 400
         try:
-            resp = requests.get(TORN_API_URL.format(key=api_key), timeout=20)
-            data = resp.json()
-        except Exception as exc:
-            return jsonify({'ok': False, 'error': f'Failed to verify API key: {exc}'}), 502
-
-        if not isinstance(data, dict):
-            return jsonify({'ok': False, 'error': 'Unexpected Torn response'}), 502
-
-        if data.get('error'):
-            err = data.get('error') or {}
-            return (
-                jsonify(
-                    {
-                        'ok': False,
-                        'error': err.get('error') or 'Invalid API key',
-                        'code': err.get('code'),
-                    }
-                ),
-                401,
-            )
-
-        player_id = int(data.get('player_id') or 0)
-        name = str(data.get('name') or '').strip() or f'User {player_id}'
-        if not player_id:
-            return jsonify({'ok': False, 'error': 'Could not identify user'}), 401
-
-        role = 'admin' if player_id in ADMIN_USER_IDS else 'user'
-        db.upsert_user(player_id, name, role=role, api_key=api_key)
-        token = secrets.token_urlsafe(32)
-        db.create_session(token, player_id, name, SESSION_TTL_SECONDS)
-
-        return jsonify(
-            {
-                'ok': True,
-                'token': token,
-                'user': {
-                    'user_id': player_id,
-                    'user_name': name,
-                    'role': role,
-                },
-                'base_url': PUBLIC_BASE_URL,
-            }
-        )
-
-    @app.post('/api/logout')
-    @require_auth
-    def logout():
-        token = (
-            request.headers.get('X-Session-Token')
-            or request.headers.get('Authorization', '').replace('Bearer ', '').strip()
-        )
-        db.delete_session(token)
-        return jsonify({'ok': True})
-
-    @app.get('/api/me')
-    @require_auth
-    def me():
-        return jsonify({'ok': True, 'user': request.session})
-
-    @app.get('/api/giveaway/current')
-    def giveaway_current():
-        sess = session_from_request()
-        giveaway = db.get_latest_giveaway(include_draft=True)
-        user_id = int(sess['user_id']) if sess else None
-        return jsonify({'ok': True, **serialize_current(giveaway, user_id)})
-
-    @app.get('/api/giveaway/entrants')
-    def giveaway_entrants_public():
-        giveaway = db.get_latest_giveaway(include_draft=True)
-        if not giveaway:
-            return jsonify(
-                {
-                    'ok': True,
-                    'entrants': [],
-                    'counts': {'total_entries': 0, 'entrant_count': 0},
-                }
-            )
-        entrants = db.get_entrants(giveaway['id'])
-        return jsonify(
-            {
-                'ok': True,
-                'entrants': entrants,
-                'counts': {
-                    'total_entries': db.count_entries(giveaway['id']),
-                    'entrant_count': len(entrants),
-                },
-            }
-        )
-
-    @app.post('/api/giveaway/enter')
-    @require_auth
-    def giveaway_enter():
-        giveaway = db.get_latest_giveaway(include_draft=True)
-        try:
-            my_entries = db.add_entry(giveaway, request.session)
-        except Exception as exc:
-            return jsonify({'ok': False, 'error': str(exc)}), 400
-
-        payload = serialize_current(giveaway, int(request.session['user_id']))
-        payload['ok'] = True
-        payload['message'] = 'Entry added'
-        payload['counts']['my_entries'] = my_entries
-        return jsonify(payload)
-
-    @app.get('/api/giveaway/history')
-    def giveaway_history():
-        return jsonify({'ok': True, 'history': db.get_winner_history(20)})
-
-    @app.post('/api/giveaway/admin/save')
-    @require_admin
-    def admin_save():
-        payload = request.get_json(silent=True) or {}
-        try:
-            giveaway = db.create_or_update_giveaway(payload, request.session)
-        except Exception as exc:
-            return jsonify({'ok': False, 'error': str(exc)}), 400
-
-        return jsonify(
-            {
-                'ok': True,
-                **serialize_current(giveaway, int(request.session['user_id'])),
-                'message': 'New round saved and entrants cleared'
-                if payload.get('new_round')
-                else 'Giveaway saved',
-            }
-        )
-
-    @app.post('/api/giveaway/admin/status')
-    @require_admin
-    def admin_status():
-        payload = request.get_json(silent=True) or {}
-        giveaway_id = int(payload.get('id') or 0)
-        status = str(payload.get('status') or '').strip().lower()
-
-        if not giveaway_id:
-            current = db.get_latest_giveaway(include_draft=True)
-            giveaway_id = int(current['id']) if current else 0
-
-        if not giveaway_id:
-            return jsonify({'ok': False, 'error': 'No giveaway found'}), 404
-
-        try:
-            giveaway = db.set_giveaway_status(giveaway_id, status)
-        except Exception as exc:
-            return jsonify({'ok': False, 'error': str(exc)}), 400
-        return jsonify({'ok': True, 'giveaway': giveaway})
-
-    @app.post('/api/giveaway/admin/draw')
-    @require_admin
-    def admin_draw():
-        payload = request.get_json(silent=True) or {}
-        giveaway_id = int(payload.get('id') or 0)
-
-        if not giveaway_id:
-            current = db.get_latest_giveaway(include_draft=True)
-            giveaway_id = int(current['id']) if current else 0
-
-        if not giveaway_id:
-            return jsonify({'ok': False, 'error': 'No giveaway found'}), 404
-
-        try:
-            giveaway = db.draw_winner(giveaway_id)
-        except Exception as exc:
-            return jsonify({'ok': False, 'error': str(exc)}), 400
-        return jsonify({'ok': True, 'giveaway': giveaway})
-
-    return app
+            conn.execute("""
+                INSERT INTO entries (giveaway_id, player_id, name, created_at)
+                VALUES (?, ?, ?, ?)
+            """, (g["id"], session["player_id"], session["name"], now_ts()))
+        except sqlite3.IntegrityError:
+            return jsonify({"ok": True, "message": "You are already entered"})
+    return jsonify({"ok": True, "message": "Entry saved"})
 
 
-app = create_app()
+@app.get("/api/admin/entries")
+@require_admin
+def admin_entries(session):
+    with db() as conn:
+        g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
+        rows = conn.execute("""
+            SELECT player_id, name, created_at
+            FROM entries
+            WHERE giveaway_id = ?
+            ORDER BY created_at ASC
+        """, (g["id"],)).fetchall()
+    return jsonify({"ok": True, "entries": [dict(r) for r in rows]})
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', '5000'))
-    app.run(host='0.0.0.0', port=port, debug=True)
+
+@app.post("/api/admin/giveaway")
+@require_admin
+def admin_update_giveaway(session):
+    data = request.get_json(force=True, silent=True) or {}
+    title = (data.get("title") or "Rolling Giveaway").strip()
+    prize_label = (data.get("prize_label") or "Faction/Event Prize").strip()
+    total_pool = int(data.get("total_pool") or 0)
+    rollover_pool = int(data.get("rollover_pool") or 0)
+    draw_at = data.get("draw_at")
+    draw_ts = int(draw_at) if str(draw_at or "").isdigit() else None
+    t = now_ts()
+
+    with db() as conn:
+        g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
+        conn.execute("""
+            UPDATE giveaways
+            SET title=?, prize_label=?, total_pool=?, rollover_pool=?, draw_at=?, updated_at=?
+            WHERE id=?
+        """, (title, prize_label, total_pool, rollover_pool, draw_ts, t, g["id"]))
+    return jsonify({"ok": True})
+
+
+@app.post("/api/admin/draw")
+@require_admin
+def admin_draw(session):
+    with db() as conn:
+        g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
+        entries = conn.execute("SELECT player_id, name FROM entries WHERE giveaway_id = ?", (g["id"],)).fetchall()
+        if not entries:
+            return jsonify({"ok": False, "error": "No entries to draw"}), 400
+
+        winner = secrets.choice(entries)
+        t = now_ts()
+        conn.execute("""
+            UPDATE giveaways
+            SET status='drawn', winner_player_id=?, winner_name=?, updated_at=?
+            WHERE id=?
+        """, (winner["player_id"], winner["name"], t, g["id"]))
+
+    return jsonify({"ok": True, "winner": {"player_id": winner["player_id"], "name": winner["name"]}})
+
+
+@app.post("/api/admin/roll")
+@require_admin
+def admin_roll(session):
+    data = request.get_json(force=True, silent=True) or {}
+    title = (data.get("title") or "Rolling Giveaway").strip()
+    prize_label = (data.get("prize_label") or "Faction/Event Prize").strip()
+    total_pool = int(data.get("total_pool") or 0)
+    rollover_pool = int(data.get("rollover_pool") or 0)
+    t = now_ts()
+
+    with db() as conn:
+        conn.execute("""
+            INSERT INTO giveaways
+            (title, prize_label, total_pool, rollover_pool, status, draw_at, created_by, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'open', NULL, ?, ?, ?)
+        """, (title, prize_label, total_pool, rollover_pool, session["player_id"], t, t))
+
+    return jsonify({"ok": True})
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port)
