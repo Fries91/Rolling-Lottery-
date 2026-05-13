@@ -254,31 +254,21 @@ def ensure_point_requests(conn):
     """)
 
 
-DEFAULT_POINT_BASE_VALUE = 820000
-DEFAULT_POINT_ITEMS = [
-    ("Donator Pack", 23500000),
-    ("Feathery Hotel Coupon", 12000000),
-    ("Drug Pack", 4000000),
-    ("Erotic DVD", 3600000),
-    ("Xanax", 820000),
-]
-
-
 def ensure_point_conversion_items(conn):
     conn.execute("""
         CREATE TABLE IF NOT EXISTS point_conversion_items (
             id INTEGER PRIMARY KEY CHECK (id = 1),
-            base_value INTEGER NOT NULL DEFAULT 820000,
-            item1_name TEXT NOT NULL DEFAULT 'Donator Pack',
-            item1_value INTEGER NOT NULL DEFAULT 23500000,
-            item2_name TEXT NOT NULL DEFAULT 'Feathery Hotel Coupon',
-            item2_value INTEGER NOT NULL DEFAULT 12000000,
-            item3_name TEXT NOT NULL DEFAULT 'Drug Pack',
-            item3_value INTEGER NOT NULL DEFAULT 4000000,
-            item4_name TEXT NOT NULL DEFAULT 'Erotic DVD',
-            item4_value INTEGER NOT NULL DEFAULT 3600000,
-            item5_name TEXT NOT NULL DEFAULT 'Xanax',
-            item5_value INTEGER NOT NULL DEFAULT 820000,
+            base_value INTEGER NOT NULL DEFAULT 850000,
+            item1_name TEXT NOT NULL DEFAULT 'Xanax',
+            item1_value INTEGER NOT NULL DEFAULT 850000,
+            item2_name TEXT NOT NULL DEFAULT '',
+            item2_value INTEGER NOT NULL DEFAULT 0,
+            item3_name TEXT NOT NULL DEFAULT '',
+            item3_value INTEGER NOT NULL DEFAULT 0,
+            item4_name TEXT NOT NULL DEFAULT '',
+            item4_value INTEGER NOT NULL DEFAULT 0,
+            item5_name TEXT NOT NULL DEFAULT '',
+            item5_value INTEGER NOT NULL DEFAULT 0,
             updated_by INTEGER,
             updated_at INTEGER NOT NULL DEFAULT 0
         )
@@ -286,58 +276,15 @@ def ensure_point_conversion_items(conn):
     t = now_ts()
     conn.execute("""
         INSERT OR IGNORE INTO point_conversion_items
-        (id, base_value,
-         item1_name, item1_value, item2_name, item2_value, item3_name, item3_value,
-         item4_name, item4_value, item5_name, item5_value, updated_at)
-        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        DEFAULT_POINT_BASE_VALUE,
-        DEFAULT_POINT_ITEMS[0][0], DEFAULT_POINT_ITEMS[0][1],
-        DEFAULT_POINT_ITEMS[1][0], DEFAULT_POINT_ITEMS[1][1],
-        DEFAULT_POINT_ITEMS[2][0], DEFAULT_POINT_ITEMS[2][1],
-        DEFAULT_POINT_ITEMS[3][0], DEFAULT_POINT_ITEMS[3][1],
-        DEFAULT_POINT_ITEMS[4][0], DEFAULT_POINT_ITEMS[4][1],
-        t,
-    ))
-
-    # One-time upgrade from the old placeholder defaults to the full item table.
-    row = conn.execute("SELECT * FROM point_conversion_items WHERE id=1").fetchone()
-    legacy_only_xanax = (
-        row
-        and int(row["base_value"] or 0) == 850000
-        and (row["item1_name"] or "").strip().lower() == "xanax"
-        and int(row["item1_value"] or 0) in (850000, 820000)
-        and not (row["item2_name"] or "").strip()
-        and not (row["item3_name"] or "").strip()
-        and not (row["item4_name"] or "").strip()
-        and not (row["item5_name"] or "").strip()
-    )
-    if legacy_only_xanax:
-        conn.execute("""
-            UPDATE point_conversion_items
-            SET base_value=?,
-                item1_name=?, item1_value=?,
-                item2_name=?, item2_value=?,
-                item3_name=?, item3_value=?,
-                item4_name=?, item4_value=?,
-                item5_name=?, item5_value=?,
-                updated_at=?
-            WHERE id=1
-        """, (
-            DEFAULT_POINT_BASE_VALUE,
-            DEFAULT_POINT_ITEMS[0][0], DEFAULT_POINT_ITEMS[0][1],
-            DEFAULT_POINT_ITEMS[1][0], DEFAULT_POINT_ITEMS[1][1],
-            DEFAULT_POINT_ITEMS[2][0], DEFAULT_POINT_ITEMS[2][1],
-            DEFAULT_POINT_ITEMS[3][0], DEFAULT_POINT_ITEMS[3][1],
-            DEFAULT_POINT_ITEMS[4][0], DEFAULT_POINT_ITEMS[4][1],
-            t,
-        ))
+        (id, base_value, item1_name, item1_value, updated_at)
+        VALUES (1, 850000, 'Xanax', 850000, ?)
+    """, (t,))
 
 
 def point_conversion_payload(conn):
     ensure_point_conversion_items(conn)
     row = conn.execute("SELECT * FROM point_conversion_items WHERE id=1").fetchone()
-    base_value = max(1, int(row["base_value"] or DEFAULT_POINT_BASE_VALUE))
+    base_value = max(1, int(row["base_value"] or 850000))
     items = []
     for i in range(1, 6):
         name = (row[f"item{i}_name"] or "").strip()
@@ -989,23 +936,15 @@ def admin_get_point_conversions(s):
 @admin_required
 def admin_save_point_conversions(s):
     data = request.get_json(force=True, silent=True) or {}
-    base_value = max(1, int(data.get("base_value") or DEFAULT_POINT_BASE_VALUE))
-
-    # Item names are locked to the 5 accepted items. Admin may change values any time.
-    # Points always use floor(value / base_value), so players are never over-credited.
+    base_value = max(1, int(data.get("base_value") or 850000))
     raw_items = data.get("items") or []
-    incoming_values = {}
-    for item in raw_items[:5]:
-        slot = int(item.get("slot") or 0)
-        if 1 <= slot <= 5:
-            incoming_values[slot] = max(0, int(item.get("value") or 0))
-
     cleaned = []
-    for idx, (name, default_value) in enumerate(DEFAULT_POINT_ITEMS, start=1):
-        cleaned.append({
-            "name": name,
-            "value": incoming_values.get(idx, default_value),
-        })
+    for item in raw_items[:5]:
+        name = (item.get("name") or "").strip()[:80]
+        value = max(0, int(item.get("value") or 0))
+        cleaned.append({"name": name, "value": value})
+    while len(cleaned) < 5:
+        cleaned.append({"name": "", "value": 0})
 
     with db() as conn:
         ensure_point_conversion_items(conn)
@@ -1613,7 +1552,7 @@ def admin_points_request_action(s):
                 int(row["player_id"]),
                 row["name"],
                 int(row["amount"]),
-                f"approved point request #{request_id}: {row['reason'] or 'item conversion request'}",
+                f"approved point request #{request_id}",
                 int(s["player_id"])
             )
 
