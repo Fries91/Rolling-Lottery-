@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.30
+// @version      1.0.31
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -66,6 +66,30 @@
 
   function money(n) {
     return "$" + Number(n || 0).toLocaleString();
+  }
+
+  function pointRowsHtml(conversion) {
+    const c = conversion || {};
+    const base = Math.max(1, Number(c.base_value || 850000));
+    const items = c.items || [];
+    if (!items.length) {
+      return `<div class="fg-muted">No point conversion items set yet.</div>`;
+    }
+    return `
+      <div class="fg-muted">1 point = ${money(base)} value. Item values are rounded down.</div>
+      <table class="fg-point-table">
+        <thead><tr><th>Item</th><th>Value</th><th>Points</th></tr></thead>
+        <tbody>
+          ${items.map(item => `
+            <tr>
+              <td>${esc(item.name)}</td>
+              <td>${money(item.value)}</td>
+              <td><b>${Number(item.points || 0).toLocaleString()} pts</b></td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
   }
 
   function drawDate(ts) {
@@ -395,6 +419,12 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
         </div>
 
         <div class="fg-card">
+          <b>Item → Points Conversion</b>
+          <p class="fg-muted">Use this table to see how many points each accepted item is worth.</p>
+          ${pointRowsHtml(res.conversion)}
+        </div>
+
+        <div class="fg-card">
           <b>Daily Free Claim</b>
           <p>${res.claimed_today ? "You already claimed today's free point." : "Claim 1 free point today."}</p>
           <button class="fg-primary" id="fg-claim-daily" ${res.claimed_today ? "disabled" : ""}>${res.claimed_today ? "Claimed Today" : "Claim 1 Free Point"}</button>
@@ -646,6 +676,24 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
       </div>
 
       <div class="fg-card private">
+        <b>Point Conversion Items</b>
+        <p class="fg-muted">Add up to 5 accepted items. Points use item value ÷ base point value, rounded down.</p>
+        <label>Base Value Per 1 Point</label>
+        <input class="fg-input" id="fg-point-base-value" type="number" min="1" value="850000">
+        <div class="fg-point-admin-grid">
+          ${[1,2,3,4,5].map(i => `
+            <div class="fg-point-admin-row">
+              <input class="fg-input" id="fg-point-item-name-${i}" placeholder="Item ${i} name">
+              <input class="fg-input" id="fg-point-item-value-${i}" type="number" min="0" placeholder="Value">
+            </div>
+          `).join("")}
+        </div>
+        <button class="fg-primary" id="fg-save-point-conversions">Save Point Conversion Items</button>
+        <button class="fg-secondary" id="fg-load-point-conversions">Reload Conversion Table</button>
+        <div id="fg-point-conversion-preview" class="fg-mini-preview"></div>
+      </div>
+
+      <div class="fg-card private">
         <b>Add Points</b>
         <label>Player ID</label>
         <input class="fg-input" id="fg-add-points-player-id" type="number" placeholder="Torn player ID">
@@ -715,6 +763,9 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     $("#fg-roll").addEventListener("click", rollAdmin);
     $("#fg-draw").addEventListener("click", drawAdmin);
     $("#fg-load-admin-stats")?.addEventListener("click", loadAdminStats);
+    $("#fg-save-point-conversions")?.addEventListener("click", adminSavePointConversions);
+    $("#fg-load-point-conversions")?.addEventListener("click", adminLoadPointConversions);
+    adminLoadPointConversions();
     $("#fg-add-points-save")?.addEventListener("click", adminAddPoints);
     $("#fg-remove-points-save")?.addEventListener("click", adminRemovePoints);
     $("#fg-points-load")?.addEventListener("click", adminLoadPoints);
@@ -725,6 +776,59 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     $("#fg-open").addEventListener("click", () => setStatus("open"));
     $("#fg-close-giveaway").addEventListener("click", () => setStatus("closed"));
   }
+
+  function fillPointConversionInputs(conversion) {
+    const c = conversion || {};
+    const base = Math.max(1, Number(c.base_value || 850000));
+    const baseInput = $("#fg-point-base-value");
+    if (baseInput) baseInput.value = base;
+
+    for (let i = 1; i <= 5; i++) {
+      const nameEl = $(`#fg-point-item-name-${i}`);
+      const valueEl = $(`#fg-point-item-value-${i}`);
+      if (nameEl) nameEl.value = "";
+      if (valueEl) valueEl.value = "";
+    }
+
+    (c.items || []).slice(0, 5).forEach((item, idx) => {
+      const i = idx + 1;
+      const nameEl = $(`#fg-point-item-name-${i}`);
+      const valueEl = $(`#fg-point-item-value-${i}`);
+      if (nameEl) nameEl.value = item.name || "";
+      if (valueEl) valueEl.value = Number(item.value || 0);
+    });
+
+    const preview = $("#fg-point-conversion-preview");
+    if (preview) preview.innerHTML = pointRowsHtml(c);
+  }
+
+  async function adminLoadPointConversions() {
+    try {
+      const res = await api("/api/admin/point-conversions");
+      fillPointConversionInputs(res.conversion);
+    } catch (e) {
+      const preview = $("#fg-point-conversion-preview");
+      if (preview) preview.innerHTML = `<div class="fg-muted">${esc(e.message)}</div>`;
+    }
+  }
+
+  async function adminSavePointConversions() {
+    try {
+      const baseValue = Math.max(1, Number($("#fg-point-base-value")?.value || 850000));
+      const items = [];
+      for (let i = 1; i <= 5; i++) {
+        const name = $(`#fg-point-item-name-${i}`)?.value.trim() || "";
+        const value = Number($(`#fg-point-item-value-${i}`)?.value || 0);
+        if (name && value > 0) items.push({ name, value });
+      }
+      const res = await api("/api/admin/point-conversions", { method: "POST", body: { base_value: baseValue, items } });
+      fillPointConversionInputs(res.conversion);
+      alert("Point conversion items saved.");
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
 
   function adminPayload() {
     const dt = $("#fg-draw-at").value;
@@ -1319,6 +1423,14 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
       #fries-giveaway-panel { right: 8px; left: 8px; width: auto; top: 48px; max-height: calc(100vh - 60px); }
       .fg-grid { grid-template-columns:1fr; }
     }
+
+    .fg-point-admin-grid { display: grid; gap: 8px; margin: 8px 0; }
+    .fg-point-admin-row { display: grid; grid-template-columns: 1fr 150px; gap: 8px; }
+    .fg-mini-preview { margin-top: 10px; padding: 10px; border-radius: 14px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.12); }
+    .fg-point-table { width: 100%; border-collapse: collapse; margin-top: 8px; overflow: hidden; border-radius: 12px; }
+    .fg-point-table th, .fg-point-table td { text-align: left; padding: 8px; border-bottom: 1px solid rgba(255,255,255,.10); }
+    .fg-point-table th { font-size: 11px; text-transform: uppercase; color: #d8cdf1; background: rgba(255,255,255,.06); }
+    @media (max-width: 560px) { .fg-point-admin-row { grid-template-columns: 1fr; } .fg-point-table th, .fg-point-table td { padding: 7px 5px; font-size: 12px; } }
   `);
 
   ensureButton();
