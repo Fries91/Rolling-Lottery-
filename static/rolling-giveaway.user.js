@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.29
+// @version      1.0.30
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -142,6 +142,7 @@
         <button data-tab="overview">Overview</button>
         <button data-tab="entry">Entry</button>
         <button data-tab="points">Points</button>
+        <button data-tab="rules">Rules</button>
         <button data-tab="winners">Winners</button>
         <button data-tab="admin" class="fg-admin-tab">Admin</button>
       </div>
@@ -225,6 +226,7 @@
     if (activeTab === "overview") return renderOverview();
     if (activeTab === "entry") return renderEntry();
     if (activeTab === "points") return renderPoints();
+    if (activeTab === "rules") return renderRules();
     if (activeTab === "winners") return renderWinners();
     if (activeTab === "admin" && isAdmin()) return renderAdmin();
     return renderOverview();
@@ -317,13 +319,11 @@
     $(".fg-body").innerHTML = `
       <div class="fg-card">
         <b>Login</b>
-        <p>Use your Torn API key so the app can confirm your Torn name and ID.</p>
-        ${user ? `<p class="fg-muted">Logged in as ${esc(user.name)} [${esc(user.player_id)}]${user.is_admin ? " • Admin" : ""}</p>` : ""}
-        <input class="fg-input" id="fg-api-key" placeholder="Paste Torn API key" value="${esc(savedKey)}">
-        <button class="fg-primary" id="fg-login">Login / Save Key</button>
+        <p class="fg-muted">API key login is now in the Rules tab at the bottom.</p>
+        <button class="fg-secondary" id="fg-go-rules-login">Open Rules / Login</button>
       </div>
 
-      <div class="fg-card">
+<div class="fg-card">
         <b>Entry Status</b>
         <p>${entryStatus}</p>
         <p class="fg-muted">Entries are automatic. Points are deducted when you enter.</p>
@@ -342,19 +342,9 @@
         <button class="fg-primary" id="fg-enter">Enter Draw</button>
       </div>
     `;
-
-    $("#fg-login").addEventListener("click", async () => {
-      const key = $("#fg-api-key").value.trim();
-      localStorage.setItem(KEY_KEY, key);
-      try {
-        const res = await api("/api/login", { method: "POST", body: { api_key: key } });
-        localStorage.setItem(LS_KEY, res.token);
-        await refresh();
-        activeTab = res.user?.is_admin ? "admin" : "entry";
-        render();
-      } catch (e) {
-        alert(e.message);
-      }
+$("#fg-go-rules-login")?.addEventListener("click", () => {
+      activeTab = "rules";
+      render();
     });
 
     loadEntryDraws();
@@ -377,27 +367,16 @@
     setTabClasses();
 
     if (!user) {
-      const savedKey = localStorage.getItem(KEY_KEY) || "";
       $(".fg-body").innerHTML = `
         <div class="fg-card">
-          <b>Points Login</b>
-          <p>Login first to view your free points balance.</p>
-          <input class="fg-input" id="fg-points-api-key" placeholder="Paste Torn API key" value="${esc(savedKey)}">
-          <button class="fg-primary" id="fg-points-login">Login / Save Key</button>
+          <b>Login Required</b>
+          <p class="fg-muted">Login with your API key from the Rules tab before viewing points.</p>
+          <button class="fg-secondary" id="fg-points-go-rules">Open Rules / Login</button>
         </div>
       `;
-      $("#fg-points-login").addEventListener("click", async () => {
-        const key = $("#fg-points-api-key").value.trim();
-        localStorage.setItem(KEY_KEY, key);
-        try {
-          const res = await api("/api/login", { method: "POST", body: { api_key: key } });
-          localStorage.setItem(LS_KEY, res.token);
-          await refresh();
-          activeTab = "points";
-          render();
-        } catch (e) {
-          alert(e.message);
-        }
+      $("#fg-points-go-rules")?.addEventListener("click", () => {
+        activeTab = "rules";
+        render();
       });
       return;
     }
@@ -514,6 +493,70 @@
     } catch (e) {
       alert(e.message);
     }
+  }
+
+
+  function renderRules() {
+    setTabClasses();
+    const savedKey = localStorage.getItem(KEY_KEY) || "";
+    $(".fg-body").innerHTML = `
+      <div class="fg-hero">
+        <div class="fg-kicker">RULES & LOGIN</div>
+        <h2>Fries91's Giveaway</h2>
+        <div class="fg-muted">Read the rules, terms, and API key use before logging in.</div>
+      </div>
+
+      <div class="fg-card">
+        <b>Rules</b>
+        <p>This giveaway app uses free/admin-granted points for event entries. Entries use points from your balance. Event entries are final once submitted. Closing, clearing, or ending an event does not refund spent points.</p>
+        <p>Admins can create event draws, activate or disable them, review point requests, and send rewards to winners after the app chooses a winner.</p>
+        <p>Users are responsible for checking event cost, max entries, and prize details before entering.</p>
+      </div>
+
+      <div class="fg-card">
+        <b>Terms of Service</b>
+        <p>By using this app, you understand this is a player-made Torn helper and not an official Torn feature. Rewards are handled manually by the admin. The app records your Torn name, Torn ID, point balance, entries, point requests, and winner history for this giveaway system.</p>
+        <p>Do not abuse the app, spam point requests, try to bypass limits, or use another player's API key. Admin may remove points, disable events, clear events, or reject point requests when needed.</p>
+      </div>
+
+      <div class="fg-card">
+        <b>API Key Use & Torn Rules</b>
+        <p>Your API key is used only to confirm your Torn identity, name, and player ID during login. The app does not need your password and should never ask for it.</p>
+        <p>The key is stored locally in your browser/PDA storage so you do not need to paste it every time. The input is masked when typed. Use a limited Torn API key where possible.</p>
+        <p>This app is designed to follow Torn's expectations by using the API for identity/login and app data only, not for automation that plays the game for you. You can remove the saved key from your browser/PDA storage by clearing site/script data.</p>
+      </div>
+
+      <div class="fg-card private">
+        <b>API Key Login</b>
+        ${user ? `<p class="fg-muted">Logged in as ${esc(user.name)} [${esc(user.player_id)}]${user.is_admin ? " • Admin" : ""}</p>` : `<p class="fg-muted">Not logged in.</p>`}
+        <label>Torn API Key</label>
+        <input class="fg-input" id="fg-rules-api-key" type="password" autocomplete="off" placeholder="Paste Torn API key" value="${esc(savedKey)}">
+        <button class="fg-primary" id="fg-rules-login">Login / Save Key</button>
+        <button class="fg-secondary" id="fg-rules-clear-key">Clear Saved Key</button>
+      </div>
+    `;
+
+    $("#fg-rules-login")?.addEventListener("click", async () => {
+      const key = $("#fg-rules-api-key").value.trim();
+      localStorage.setItem(KEY_KEY, key);
+      try {
+        const res = await api("/api/login", { method: "POST", body: { api_key: key } });
+        localStorage.setItem(LS_KEY, res.token);
+        await refresh();
+        activeTab = "overview";
+        render();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+
+    $("#fg-rules-clear-key")?.addEventListener("click", () => {
+      localStorage.removeItem(KEY_KEY);
+      localStorage.removeItem(LS_KEY);
+      user = null;
+      alert("Saved API key/session cleared from this browser.");
+      render();
+    });
   }
 
 
