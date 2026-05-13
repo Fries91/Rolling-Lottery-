@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.20
+// @version      1.0.22
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -209,39 +209,9 @@
       <div class="fg-hero">
         <div class="fg-kicker">${esc(g.status).toUpperCase()}</div>
         <h2>${esc(g.title || "Fries91's Giveaway")}</h2>
-        <div class="fg-big">${money(g.total_pool)}</div>
-        <div class="fg-muted">Rolling jackpot • Approved entries only</div>
+        <div class="fg-big">${money(g.player_cut)}</div>
+        <div class="fg-muted">Player payout</div>
       </div>
-
-      <div class="fg-grid">
-        <div class="fg-card"><b>Player Prize 60%</b><span>${money(g.player_cut)}</span></div>
-        <div class="fg-card"><b>Approved Entries</b><span>${g.approved_entry_count}</span></div>
-        <div class="fg-card"><b>Approved Points</b><span>${g.approved_points_total || 0}</span></div>
-        <div class="fg-card"><b>Pending Entries</b><span>${g.pending_entry_count}</span></div>
-        <div class="fg-card"><b>Rejected Entries</b><span>${g.rejected_entry_count}</span></div>
-        <div class="fg-card"><b>Entry Value</b><span>${money(g.entry_item_value)}</span></div>
-        <div class="fg-card"><b>Rollover 20%</b><span>${money(g.rollover_cut)}</span></div>
-        <div class="fg-card"><b>Next Start</b><span>${money(g.next_starting_jackpot || g.rollover_cut)}</span></div>
-      </div>
-
-      <div class="fg-card">
-        <b>Pot Formula</b>
-        <span>Base ${money(g.base_payout)} + Approved Points ${g.approved_points_total || 0} × ${money(g.entry_item_value)} = ${money(g.total_pool)}</span>
-      </div>
-
-      ${g.winner_name ? `
-        <div class="fg-card win">
-          <b>Last Winner</b>
-          <span>${esc(g.winner_name)} [${esc(g.winner_player_id)}]</span>
-        </div>
-      ` : ""}
-
-      ${g.is_admin ? `
-        <div class="fg-card private">
-          <b>Admin Only</b>
-          <span>Tier/Admin 20%: ${money(g.reserve_cut)}</span>
-        </div>
-      ` : ""}
 
       <div id="fg-event-overview-boxes"></div>
       <button class="fg-secondary" id="fg-refresh">Refresh</button>
@@ -271,6 +241,7 @@
             <span>Cost: ${esc(d.point_cost || 1)} point(s)</span>
             <span>Starts: ${esc(fmtTime(d.start_at))}</span>
             <span>Ends: ${esc(fmtTime(d.end_at))} • ${esc(countdownText(d.end_at))}</span>
+            <span>Entered: ${esc(d.total_entry_count || d.entry_count || 0)}</span>
             <span>Status: ${esc(d.status)}</span>
             ${d.winner_name ? `<span class="fg-winner-line">Winner: ${esc(d.winner_name)} [${esc(d.winner_player_id)}] — Admin send reward</span>` : ""}
           </div>
@@ -300,7 +271,7 @@
       <div class="fg-card">
         <b>Entry Status</b>
         <p>${entryStatus}</p>
-        <p class="fg-muted">Entries are submitted as pending. Only admin-approved entries count toward the draw and pot.</p>
+        <p class="fg-muted">Entries are automatic. Points are deducted when you enter.</p>
       </div>
 
       <div class="fg-card">
@@ -312,8 +283,8 @@
         <p id="fg-selected-entry-status" class="fg-muted"></p>
         <label>Points to Use</label>
         <input class="fg-input" id="fg-entry-points" type="number" min="1" value="1">
-        <p class="fg-muted">Enter at least the draw cost. Extra points can add extra weight. Points are only deducted after admin approval.</p>
-        <button class="fg-primary" id="fg-enter">Submit Entry Request</button>
+        <p class="fg-muted">Enter at least the draw cost. Extra points can add extra weight. Points are deducted when you submit the entry request.</p>
+        <button class="fg-primary" id="fg-enter">Enter Draw</button>
       </div>
     `;
 
@@ -396,6 +367,18 @@
         </div>
 
         <div class="fg-card">
+          <b>Request Points</b>
+          <p class="fg-muted">Ask admin for free points. Admin approval is required before points are added.</p>
+          <label>Amount Requested</label>
+          <input class="fg-input" id="fg-request-points-amount" type="number" min="1" placeholder="Example: 10">
+          <label>Reason</label>
+          <input class="fg-input" id="fg-request-points-reason" placeholder="Example: event participation">
+          <button class="fg-primary" id="fg-request-points-submit">Send Point Request</button>
+          <button class="fg-secondary" id="fg-load-my-point-requests">My Requests</button>
+          <div id="fg-my-point-requests"></div>
+        </div>
+
+        <div class="fg-card">
           <b>Point History</b>
           <div id="fg-point-history">
             ${
@@ -417,6 +400,9 @@
           alert(e.message);
         }
       });
+
+      $("#fg-request-points-submit")?.addEventListener("click", submitPointRequest);
+      $("#fg-load-my-point-requests")?.addEventListener("click", loadMyPointRequests);
     } catch (e) {
       renderError(e.message);
     }
@@ -435,11 +421,43 @@
         : `<option value="">No open draws</option>`;
 
       $("#fg-selected-entry-status").textContent = draws.length
-        ? "Entry requests are pending until admin approval."
+        ? "Entries go in right away. Points are deducted when submitted."
         : "No open draws are available right now.";
     } catch (e) {
       const sel = $("#fg-entry-draw-select");
       if (sel) sel.innerHTML = `<option value="">Could not load draws</option>`;
+    }
+  }
+
+  async function submitPointRequest() {
+    try {
+      const amount = Number($("#fg-request-points-amount")?.value || 0);
+      const reason = $("#fg-request-points-reason")?.value.trim() || "";
+      if (!amount || amount <= 0) return alert("Enter a point amount.");
+
+      await api("/api/points/request", {
+        method: "POST",
+        body: { amount, reason }
+      });
+
+      alert("Point request sent to admin for approval.");
+      await loadMyPointRequests();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  async function loadMyPointRequests() {
+    try {
+      const res = await api("/api/points/requests");
+      const box = $("#fg-my-point-requests");
+      if (!box) return;
+
+      box.innerHTML = (res.requests || []).length
+        ? res.requests.map(r => `<div class="fg-entry"><b>${esc(r.amount)} pts</b> ${statusPill(r.status)}<br><span>${esc(r.reason || "No reason")}</span></div>`).join("")
+        : `<div class="fg-muted">No point requests yet.</div>`;
+    } catch (e) {
+      alert(e.message);
     }
   }
 
@@ -518,6 +536,12 @@
       </div>
 
       <div class="fg-card private">
+        <b>Point Requests</b>
+        <button class="fg-secondary" id="fg-load-point-requests">Load Point Requests</button>
+        <div id="fg-point-requests"></div>
+      </div>
+
+      <div class="fg-card private">
         <b>Point Balances</b>
         <button class="fg-secondary" id="fg-points-load">Load Balances</button>
         <div id="fg-points-balances"></div>
@@ -541,21 +565,15 @@
         <button class="fg-secondary" id="fg-load-draws">Load All Draws</button>
         <div id="fg-draws-list"></div>
       </div>
-
-      <div class="fg-card">
-        <b>Entry Approvals</b>
-        <button class="fg-secondary" id="fg-load-entries">Load Entries</button>
-        <div id="fg-entries"></div>
-      </div>
     `;
 
     $("#fg-save").addEventListener("click", saveAdmin);
     $("#fg-roll").addEventListener("click", rollAdmin);
     $("#fg-draw").addEventListener("click", drawAdmin);
-    $("#fg-load-entries").addEventListener("click", loadEntries);
     $("#fg-add-points-save")?.addEventListener("click", adminAddPoints);
     $("#fg-remove-points-save")?.addEventListener("click", adminRemovePoints);
     $("#fg-points-load")?.addEventListener("click", adminLoadPoints);
+    $("#fg-load-point-requests")?.addEventListener("click", adminLoadPointRequests);
     $("#fg-create-draw")?.addEventListener("click", createDrawFromSettings);
     $("#fg-load-draws")?.addEventListener("click", loadDraws);
     $("#fg-open").addEventListener("click", () => setStatus("open"));
@@ -694,6 +712,49 @@
       alert(e.message);
     }
   }
+
+  async function adminLoadPointRequests() {
+    try {
+      const res = await api("/api/admin/points/requests");
+      const box = $("#fg-point-requests");
+      if (!box) return;
+
+      box.innerHTML = (res.requests || []).length
+        ? res.requests.map(r => `
+          <div class="fg-entry">
+            <div><b>${esc(r.name)} [${esc(r.player_id)}]</b></div>
+            <div>${esc(r.amount)} pts ${statusPill(r.status)}</div>
+            <div class="fg-muted">${esc(r.reason || "No reason")}</div>
+            ${r.status === "pending" ? `
+              <div class="fg-entry-actions">
+                <button data-point-approve="${r.id}" class="fg-mini good">Approve</button>
+                <button data-point-reject="${r.id}" class="fg-mini badbtn">Reject</button>
+              </div>
+            ` : ""}
+          </div>
+        `).join("")
+        : `<div class="fg-muted">No point requests.</div>`;
+
+      box.querySelectorAll("[data-point-approve]").forEach(b => b.addEventListener("click", () => adminReviewPointRequest(Number(b.dataset.pointApprove), "approve")));
+      box.querySelectorAll("[data-point-reject]").forEach(b => b.addEventListener("click", () => adminReviewPointRequest(Number(b.dataset.pointReject), "reject")));
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  async function adminReviewPointRequest(requestId, action) {
+    try {
+      await api("/api/admin/points/requests", {
+        method: "POST",
+        body: { request_id: requestId, action }
+      });
+      await adminLoadPointRequests();
+      await adminLoadPoints();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
 
   async function adminLoadPoints() {
     try {
