@@ -118,7 +118,8 @@ def ensure_giveaways(conn):
             winner_name TEXT,
             created_by INTEGER,
             created_at INTEGER NOT NULL DEFAULT 0,
-            updated_at INTEGER NOT NULL DEFAULT 0
+            updated_at INTEGER NOT NULL DEFAULT 0,
+            deleted_at INTEGER
         )
     """)
     for col, sql in [
@@ -139,6 +140,7 @@ def ensure_giveaways(conn):
         ("created_by", "created_by INTEGER"),
         ("created_at", "created_at INTEGER NOT NULL DEFAULT 0"),
         ("updated_at", "updated_at INTEGER NOT NULL DEFAULT 0"),
+        ("deleted_at", "deleted_at INTEGER"),
     ]:
         add_col(conn, "giveaways", col, sql)
 
@@ -475,10 +477,10 @@ def state():
     private = bool(s and int(s["player_id"]) == ADMIN_PLAYER_ID)
 
     with db() as conn:
-        g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
+        g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 1").fetchone()
         if not g:
             init_db()
-            g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
+            g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 1").fetchone()
 
         user_entry = None
         user = None
@@ -503,7 +505,7 @@ def state():
 @login_required
 def enter(s):
     with db() as conn:
-        g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
+        g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 1").fetchone()
         if not g or g["status"] != "open":
             return jsonify({"ok": False, "error": "Giveaway is not open"}), 400
         try:
@@ -520,7 +522,7 @@ def enter(s):
 @admin_required
 def admin_entries(s):
     with db() as conn:
-        g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
+        g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 1").fetchone()
         rows = conn.execute("""
             SELECT id, player_id, name, status, created_at, reviewed_by, reviewed_at
             FROM entries
@@ -560,7 +562,7 @@ def admin_save(s):
     data = request.get_json(force=True, silent=True) or {}
     t = now_ts()
     with db() as conn:
-        g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
+        g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 1").fetchone()
         conn.execute("""
             UPDATE giveaways
             SET title=?, prize_label=?, base_payout=?, entry_item_name=?, entry_item_value=?,
@@ -584,7 +586,7 @@ def admin_save(s):
 @admin_required
 def admin_draw(s):
     with db() as conn:
-        g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
+        g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 1").fetchone()
         rows = conn.execute("""
             SELECT player_id, name
             FROM entries
@@ -607,7 +609,7 @@ def admin_roll(s):
     t = now_ts()
 
     with db() as conn:
-        current = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
+        current = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 1").fetchone()
         current_payload = clean_giveaway(conn, current, True)
         next_base_payout = int(current_payload.get("rollover_cut") or 0)
 
@@ -638,7 +640,7 @@ def admin_status(s):
     if status not in ("open", "closed", "drawn"):
         return jsonify({"ok": False, "error": "Invalid status"}), 400
     with db() as conn:
-        g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
+        g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 1").fetchone()
         conn.execute("UPDATE giveaways SET status=?, updated_at=? WHERE id=?", (status, now_ts(), g["id"]))
     return jsonify({"ok": True})
 
@@ -726,6 +728,107 @@ def admin_points_adjust(s):
         return jsonify({"ok": False, "error": str(exc)}), 400
 
     return jsonify({"ok": True, "player_id": player_id, "balance": new_balance})
+
+
+@app.get("/api/draws")
+def api_draws():
+    s = session()
+    private = bool(s and int(s["player_id"]) == ADMIN_PLAYER_ID)
+
+    with db() as conn:
+        ensure_giveaways(conn)
+        ensure_entries(conn)
+        rows = conn.execute("""
+            SELECT *
+            FROM giveaways
+            WHERE deleted_at IS NULL
+            ORDER BY id DESC
+        """).fetchall()
+
+        draws = [clean_giveaway(conn, r, private) for r in rows]
+
+    return jsonify({"ok": True, "draws": draws})
+
+
+@app.post("/api/admin/draws")
+@admin_required
+def admin_create_draw(s):
+    data = request.get_json(force=True, silent=True) or {}
+    t = now_ts()
+
+    with db() as conn:
+        ensure_giveaways(conn)
+        conn.execute("""
+            INSERT INTO giveaways
+            (title, prize_label, total_pool, base_payout, entry_item_name, entry_item_value,
+             player_percent, rollover_percent, reserve_percent, rollover_pool, status, draw_at,
+             created_by, created_at, updated_at)
+            VALUES (?, ?, 0, ?, ?, ?, 60, 20, 20, ?, ?, ?, ?, ?, ?)
+        """, (
+            (data.get("title") or "Fries91's Giveaway").strip(),
+            (data.get("prize_label") or "Faction/Event Prize").strip(),
+            int(data.get("base_payout") or 0),
+            (data.get("entry_item_name") or "Xanax").strip(),
+            int(data.get("entry_item_value") or 0),
+            int(data.get("rollover_pool") or 0),
+            (data.get("status") or "open").strip().lower(),
+            int(data["draw_at"]) if str(data.get("draw_at") or "").isdigit() else None,
+            int(s["player_id"]),
+            t,
+            t,
+        ))
+        new_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+
+    return jsonify({"ok": True, "draw_id": int(new_id)})
+
+
+@app.post("/api/admin/draws/delete")
+@admin_required
+def admin_delete_draw(s):
+    data = request.get_json(force=True, silent=True) or {}
+    draw_id = int(data.get("draw_id") or 0)
+
+    if not draw_id:
+        return jsonify({"ok": False, "error": "Missing draw id"}), 400
+
+    with db() as conn:
+        ensure_giveaways(conn)
+        row = conn.execute(
+            "SELECT id FROM giveaways WHERE id=? AND deleted_at IS NULL",
+            (draw_id,)
+        ).fetchone()
+
+        if not row:
+            return jsonify({"ok": False, "error": "Draw not found"}), 404
+
+        conn.execute(
+            "UPDATE giveaways SET status='deleted', deleted_at=?, updated_at=? WHERE id=?",
+            (now_ts(), now_ts(), draw_id)
+        )
+
+    return jsonify({"ok": True})
+
+
+@app.post("/api/admin/draws/status")
+@admin_required
+def admin_draw_status(s):
+    data = request.get_json(force=True, silent=True) or {}
+    draw_id = int(data.get("draw_id") or 0)
+    status = (data.get("status") or "open").strip().lower()
+
+    if not draw_id:
+        return jsonify({"ok": False, "error": "Missing draw id"}), 400
+    if status not in ("open", "closed", "drawn"):
+        return jsonify({"ok": False, "error": "Invalid status"}), 400
+
+    with db() as conn:
+        ensure_giveaways(conn)
+        conn.execute(
+            "UPDATE giveaways SET status=?, updated_at=? WHERE id=? AND deleted_at IS NULL",
+            (status, now_ts(), draw_id)
+        )
+
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":
