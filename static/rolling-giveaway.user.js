@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.15
+// @version      1.0.16
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -262,7 +262,7 @@
         <p id="fg-selected-entry-status" class="fg-muted"></p>
         <label>Points to Use</label>
         <input class="fg-input" id="fg-entry-points" type="number" min="1" value="1">
-        <p class="fg-muted">More points means more weight in that draw. Points are only deducted after admin approval.</p>
+        <p class="fg-muted">Enter at least the draw cost. Extra points can add extra weight. Points are only deducted after admin approval.</p>
         <button class="fg-primary" id="fg-enter">Submit Entry Request</button>
       </div>
     `;
@@ -381,7 +381,7 @@
 
       const draws = (res.draws || []).filter(d => d.status === "open");
       sel.innerHTML = draws.length
-        ? draws.map(d => `<option value="${esc(d.id)}">#${esc(d.id)} • ${esc(d.title)} • ${esc(d.draw_type || "draw")} • Jackpot ${money(d.total_pool)}</option>`).join("")
+        ? draws.map(d => `<option value="${esc(d.id)}">#${esc(d.id)} • ${esc(d.title)} • Prize: ${esc(d.event_prize || d.prize_label || "Prize")} • Cost: ${esc(d.point_cost || 1)} pt(s)</option>`).join("")
         : `<option value="">No open draws</option>`;
 
       $("#fg-selected-entry-status").textContent = draws.length
@@ -461,9 +461,13 @@
         <p class="fg-muted">Create extra event draws separate from the rolling jackpot.</p>
         <label>Event Title</label>
         <input class="fg-input" id="fg-event-title" placeholder="Event draw title">
-        <label>Event Base Prize</label>
+        <label>Prize</label>
+        <input class="fg-input" id="fg-event-prize" placeholder="Example: 50m cash / Xanax bundle / Donator Pack">
+        <label>Cost of Entry Per Point</label>
+        <input class="fg-input" id="fg-event-point-cost" type="number" min="1" value="1">
+        <label>Event Base Prize Value</label>
         <input class="fg-input" id="fg-event-base" type="number" value="0">
-        <label>Event Entry Value</label>
+        <label>Value Added Per Approved Point</label>
         <input class="fg-input" id="fg-event-entry-value" type="number" value="0">
         <button class="fg-primary" id="fg-create-draw">Create Other Event Draw</button>
         <button class="fg-secondary" id="fg-load-draws">Load All Draws</button>
@@ -612,6 +616,8 @@
   async function createDrawFromSettings() {
     try {
       const title = $("#fg-event-title")?.value.trim() || "Other Event Draw";
+      const eventPrize = $("#fg-event-prize")?.value.trim() || "Event Prize";
+      const pointCost = Number($("#fg-event-point-cost")?.value || 1);
       const base = Number($("#fg-event-base")?.value || 0);
       const entryValue = Number($("#fg-event-entry-value")?.value || 0);
 
@@ -619,7 +625,9 @@
         method: "POST",
         body: {
           title,
-          prize_label: "Event Prize",
+          prize_label: eventPrize,
+          event_prize: eventPrize,
+          point_cost: pointCost,
           base_payout: base,
           entry_item_name: "Free Points/Event",
           entry_item_value: entryValue,
@@ -648,6 +656,7 @@
           <div class="fg-entry">
             <div><b>#${esc(d.id)} — ${esc(d.title)}</b></div>
             <div>${statusPill(d.status)}</div>
+            <div class="fg-muted">Prize: ${esc(d.event_prize || d.prize_label || "Prize")} • Cost: ${esc(d.point_cost || 1)} pt(s)</div>
             <div class="fg-muted">Jackpot: ${money(d.total_pool)} • Approved: ${esc(d.approved_entry_count || d.entry_count || 0)} • Points: ${esc(d.approved_points_total || 0)} • Pending: ${esc(d.pending_entry_count || 0)}</div>
             <div class="fg-muted">Next Start: ${money(d.next_starting_jackpot || d.rollover_cut || 0)}</div>
             <div class="fg-entry-actions">
