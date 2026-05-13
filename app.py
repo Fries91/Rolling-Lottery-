@@ -120,7 +120,9 @@ def ensure_giveaways(conn):
             created_at INTEGER NOT NULL DEFAULT 0,
             updated_at INTEGER NOT NULL DEFAULT 0,
             deleted_at INTEGER,
-            draw_type TEXT NOT NULL DEFAULT 'rolling'
+            draw_type TEXT NOT NULL DEFAULT 'rolling',
+            event_prize TEXT,
+            point_cost INTEGER NOT NULL DEFAULT 1
         )
     """)
     for col, sql in [
@@ -143,6 +145,8 @@ def ensure_giveaways(conn):
         ("updated_at", "updated_at INTEGER NOT NULL DEFAULT 0"),
         ("deleted_at", "deleted_at INTEGER"),
         ("draw_type", "draw_type TEXT NOT NULL DEFAULT 'rolling'"),
+        ("event_prize", "event_prize TEXT"),
+        ("point_cost", "point_cost INTEGER NOT NULL DEFAULT 1"),
     ]:
         add_col(conn, "giveaways", col, sql)
 
@@ -335,6 +339,8 @@ def clean_giveaway(conn, g, private=False):
         "title": g["title"] or "Fries91's Giveaway",
         "prize_label": g["prize_label"] or "Prize",
         "draw_type": g["draw_type"] if "draw_type" in g.keys() else "rolling",
+        "event_prize": g["event_prize"] if "event_prize" in g.keys() else None,
+        "point_cost": int(g["point_cost"] or 1) if "point_cost" in g.keys() else 1,
         "base_payout": base_payout,
         "entry_item_name": g["entry_item_name"] or "Xanax",
         "entry_item_value": entry_item_value,
@@ -546,6 +552,10 @@ def enter(s):
 
         if not g or g["status"] != "open":
             return jsonify({"ok": False, "error": "Draw is not open"}), 400
+
+        minimum_cost = int(g["point_cost"] or 1) if "point_cost" in g.keys() else 1
+        if points_spent < minimum_cost:
+            return jsonify({"ok": False, "error": f"This draw costs at least {minimum_cost} point(s) to enter"}), 400
 
         try:
             conn.execute("""
@@ -839,8 +849,8 @@ def admin_create_draw(s):
             INSERT INTO giveaways
             (title, prize_label, total_pool, base_payout, entry_item_name, entry_item_value,
              player_percent, rollover_percent, reserve_percent, rollover_pool, status, draw_at,
-             created_by, created_at, updated_at, draw_type)
-            VALUES (?, ?, 0, ?, ?, ?, 60, 20, 20, ?, ?, ?, ?, ?, ?, ?)
+             created_by, created_at, updated_at, draw_type, event_prize, point_cost)
+            VALUES (?, ?, 0, ?, ?, ?, 60, 20, 20, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             (data.get("title") or "Other Event Draw").strip(),
             (data.get("prize_label") or "Event Prize").strip(),
@@ -854,6 +864,8 @@ def admin_create_draw(s):
             t,
             t,
             draw_type,
+            (data.get("event_prize") or data.get("prize_label") or "Event Prize").strip(),
+            int(data.get("point_cost") or 1),
         ))
         new_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
 
