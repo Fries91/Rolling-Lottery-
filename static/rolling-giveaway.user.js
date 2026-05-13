@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.28
+// @version      1.0.29
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -597,6 +597,12 @@
       </div>
 
       <div class="fg-card private">
+        <b>Admin Stats</b>
+        <button class="fg-secondary" id="fg-load-admin-stats">Load Stats</button>
+        <div id="fg-admin-stats"></div>
+      </div>
+
+      <div class="fg-card private">
         <b>Add Points</b>
         <label>Player ID</label>
         <input class="fg-input" id="fg-add-points-player-id" type="number" placeholder="Torn player ID">
@@ -665,6 +671,7 @@
     $("#fg-save").addEventListener("click", saveAdmin);
     $("#fg-roll").addEventListener("click", rollAdmin);
     $("#fg-draw").addEventListener("click", drawAdmin);
+    $("#fg-load-admin-stats")?.addEventListener("click", loadAdminStats);
     $("#fg-add-points-save")?.addEventListener("click", adminAddPoints);
     $("#fg-remove-points-save")?.addEventListener("click", adminRemovePoints);
     $("#fg-points-load")?.addEventListener("click", adminLoadPoints);
@@ -764,6 +771,45 @@
       alert(e.message);
     }
   }
+
+  async function loadAdminStats() {
+    try {
+      const res = await api("/api/admin/stats");
+      const box = $("#fg-admin-stats");
+      if (!box) return;
+
+      const pr = res.point_requests || {};
+      const events = res.events || [];
+
+      box.innerHTML = `
+        <div class="fg-split">
+          <div>Script Users: <b>${esc(res.script_users || 0)}</b></div>
+          <div>Point Requests: <b>${esc(pr.total_count || 0)}</b></div>
+          <div>Pending Requests: <b>${esc(pr.pending_count || 0)} (${esc(pr.pending_points || 0)} pts)</b></div>
+          <div>Approved Requests: <b>${esc(pr.approved_count || 0)} (${esc(pr.approved_points || 0)} pts)</b></div>
+          <div>Total Requested Points: <b>${esc(pr.total_points || 0)}</b></div>
+        </div>
+
+        <b style="display:block;margin-top:10px;">Points Used By Event</b>
+        ${
+          events.length
+            ? events.map(ev => `
+              <div class="fg-entry">
+                <b>#${esc(ev.id)} — ${esc(ev.title)}</b><br>
+                <span>Status: ${esc(ev.status)}</span><br>
+                <span>Prize: ${esc(ev.event_prize || ev.prize_label || "Prize")}</span><br>
+                <span>Users Entered: ${esc(ev.entrant_count || 0)}</span><br>
+                <span>Points Used: ${esc(ev.points_used || 0)}</span>
+              </div>
+            `).join("")
+            : `<div class="fg-muted">No events found.</div>`
+        }
+      `;
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
 
   async function adminAddPoints() {
     try {
@@ -1133,7 +1179,7 @@
   }
 
   async function clearDraw(drawId) {
-    if (!confirm("Clear event draw #" + drawId + "? This removes its entries and winner and closes it.")) return;
+    if (!confirm("Clear event draw #" + drawId + "? This removes entries/winner and closes it. Points will NOT be refunded.")) return;
     try {
       await api("/api/admin/draws/clear", { method: "POST", body: { draw_id: drawId } });
       await refresh();
