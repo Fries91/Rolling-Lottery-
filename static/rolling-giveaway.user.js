@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.24
+// @version      1.0.25
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -255,9 +255,12 @@
       const box = $("#fg-event-overview-boxes");
       if (!box) return;
 
+      const nowSec = Math.floor(Date.now() / 1000);
       const events = (res.draws || [])
         .filter(d => (d.draw_type || "rolling") === "event")
-        .filter(d => !d.winner_name && d.status !== "drawn" && d.status !== "deleted")
+        .filter(d => d.status === "open")
+        .filter(d => !d.winner_name)
+        .filter(d => !d.end_at || Number(d.end_at) > nowSec)
         .slice(0, 5);
       if (!events.length) {
         box.innerHTML = "";
@@ -614,23 +617,10 @@
 
       <div class="fg-card private">
         <b>Other Events / Draws</b>
-        <p class="fg-muted">Create up to 5 event draws separate from the rolling jackpot. Finished events move to Winners.</p>
-        <label>Event Title</label>
-        <input class="fg-input" id="fg-event-title" placeholder="Event draw title">
-        <label>Prize</label>
-        <input class="fg-input" id="fg-event-prize" placeholder="Example: 50m cash / Xanax bundle / Donator Pack">
-        <label>Cost of Entry Per Point</label>
-        <input class="fg-input" id="fg-event-point-cost" type="number" min="1" value="1">
-        <label>Max Entries/Points Per Player</label>
-        <input class="fg-input" id="fg-event-max-entries" type="number" min="1" value="1">
-        <label>Start Time</label>
-        <input class="fg-input" id="fg-event-start" type="datetime-local">
-        <label>End Time</label>
-        <input class="fg-input" id="fg-event-end" type="datetime-local">
-        <button class="fg-primary" id="fg-create-draw">Create Other Event Draw</button>
-        <div id="fg-event-create-note" class="fg-muted">After creation, the event will show on Overview.</div>
-        <button class="fg-secondary" id="fg-load-draws">Load All Draws</button>
-        <div id="fg-draws-list"></div>
+        <p class="fg-muted">5 event slots. Create, update, activate, disable, clear, or delete each event.</p>
+        <button class="fg-secondary" id="fg-load-draws">Refresh Event Slots</button>
+        <div id="fg-event-slots"></div>
+        <div id="fg-draws-list" style="display:none"></div>
       </div>
     `;
 
@@ -641,8 +631,8 @@
     $("#fg-remove-points-save")?.addEventListener("click", adminRemovePoints);
     $("#fg-points-load")?.addEventListener("click", adminLoadPoints);
     $("#fg-load-point-requests")?.addEventListener("click", adminLoadPointRequests);
-    $("#fg-create-draw")?.addEventListener("click", createDrawFromSettings);
-    $("#fg-load-draws")?.addEventListener("click", loadDraws);
+    $("#fg-load-draws")?.addEventListener("click", renderEventSlots);
+    renderEventSlots();
     $("#fg-open").addEventListener("click", () => setStatus("open"));
     $("#fg-close-giveaway").addEventListener("click", () => setStatus("closed"));
   }
@@ -836,6 +826,148 @@
   }
 
 
+  function eventSlotHtml(slotNum, event) {
+    const title = event?.title || `Event Slot ${slotNum}`;
+    const prize = event?.event_prize || event?.prize_label || "";
+    const pointCost = event?.point_cost || 1;
+    const maxEntries = event?.max_entries_per_player || 1;
+    const startVal = event?.start_at ? new Date(Number(event.start_at) * 1000).toISOString().slice(0, 16) : "";
+    const endVal = event?.end_at ? new Date(Number(event.end_at) * 1000).toISOString().slice(0, 16) : "";
+    const idLine = event ? `#${event.id} • ${event.status}` : "Empty slot";
+
+    return `
+      <div class="fg-card fg-event-slot fg-event-color-${(slotNum - 1) % 5}" data-slot="${slotNum}" data-draw-id="${event?.id || ""}">
+        <b>Event ${slotNum}</b>
+        <div class="fg-muted">${esc(idLine)}</div>
+
+        <label>Event Title</label>
+        <input class="fg-input" id="fg-event-${slotNum}-title" value="${esc(title)}">
+
+        <label>Prize</label>
+        <input class="fg-input" id="fg-event-${slotNum}-prize" value="${esc(prize)}" placeholder="Prize">
+
+        <label>Cost of Entry Per Point</label>
+        <input class="fg-input" id="fg-event-${slotNum}-point-cost" type="number" min="1" value="${esc(pointCost)}">
+
+        <label>Max Entries/Points Per Player</label>
+        <input class="fg-input" id="fg-event-${slotNum}-max" type="number" min="1" value="${esc(maxEntries)}">
+
+        <label>Start Time</label>
+        <input class="fg-input" id="fg-event-${slotNum}-start" type="datetime-local" value="${esc(startVal)}">
+
+        <label>End Time</label>
+        <input class="fg-input" id="fg-event-${slotNum}-end" type="datetime-local" value="${esc(endVal)}">
+
+        ${event?.winner_name ? `<div class="fg-winner-line">Winner: ${esc(event.winner_name)} [${esc(event.winner_player_id)}]</div>` : ""}
+
+        <div class="fg-slot-actions">
+          <button class="fg-mini good" data-slot-save="${slotNum}">${event ? "Update" : "Create"}</button>
+          <button class="fg-mini good" data-slot-open="${slotNum}" ${event ? "" : "disabled"}>Activate</button>
+          <button class="fg-mini" data-slot-close="${slotNum}" ${event ? "" : "disabled"}>Disable</button>
+          <button class="fg-mini" data-slot-clear="${slotNum}" ${event ? "" : "disabled"}>Clear</button>
+          <button class="fg-mini badbtn" data-slot-delete="${slotNum}" ${event ? "" : "disabled"}>Delete</button>
+        </div>
+      </div>
+    `;
+  }
+
+  async function renderEventSlots() {
+    try {
+      const res = await api("/api/draws");
+      const box = $("#fg-event-slots");
+      if (!box) return;
+
+      const events = (res.draws || [])
+        .filter(d => (d.draw_type || "rolling") === "event")
+        .slice(0, 5);
+
+      box.innerHTML = [1, 2, 3, 4, 5].map(i => eventSlotHtml(i, events[i - 1])).join("");
+
+      box.querySelectorAll("[data-slot-save]").forEach(b => b.addEventListener("click", () => saveEventSlot(Number(b.dataset.slotSave))));
+      box.querySelectorAll("[data-slot-open]").forEach(b => b.addEventListener("click", () => setSlotStatus(Number(b.dataset.slotOpen), "open")));
+      box.querySelectorAll("[data-slot-close]").forEach(b => b.addEventListener("click", () => setSlotStatus(Number(b.dataset.slotClose), "closed")));
+      box.querySelectorAll("[data-slot-clear]").forEach(b => b.addEventListener("click", () => clearSlot(Number(b.dataset.slotClear))));
+      box.querySelectorAll("[data-slot-delete]").forEach(b => b.addEventListener("click", () => deleteSlot(Number(b.dataset.slotDelete))));
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  function slotPayload(slotNum) {
+    const startInput = $(`#fg-event-${slotNum}-start`)?.value || "";
+    const endInput = $(`#fg-event-${slotNum}-end`)?.value || "";
+    const start_at = startInput ? Math.floor(new Date(startInput).getTime() / 1000) : null;
+    const end_at = endInput ? Math.floor(new Date(endInput).getTime() / 1000) : null;
+
+    return {
+      title: $(`#fg-event-${slotNum}-title`)?.value.trim() || `Event Slot ${slotNum}`,
+      prize_label: $(`#fg-event-${slotNum}-prize`)?.value.trim() || "Event Prize",
+      event_prize: $(`#fg-event-${slotNum}-prize`)?.value.trim() || "Event Prize",
+      point_cost: Number($(`#fg-event-${slotNum}-point-cost`)?.value || 1),
+      max_entries_per_player: Number($(`#fg-event-${slotNum}-max`)?.value || 1),
+      base_payout: 0,
+      entry_item_name: "Free Points/Event",
+      entry_item_value: 0,
+      rollover_pool: 0,
+      status: "open",
+      draw_type: "event",
+      start_at,
+      end_at
+    };
+  }
+
+  function slotDrawId(slotNum) {
+    return Number($(`.fg-event-slot[data-slot="${slotNum}"]`)?.dataset.drawId || 0);
+  }
+
+  async function saveEventSlot(slotNum) {
+    try {
+      const drawId = slotDrawId(slotNum);
+      const payload = slotPayload(slotNum);
+      if (!payload.point_cost || payload.point_cost < 1) return alert("Cost must be at least 1 point.");
+      if (!payload.max_entries_per_player || payload.max_entries_per_player < 1) return alert("Max entries must be at least 1.");
+      if (!payload.start_at) return alert("Pick a start time.");
+      if (!payload.end_at) return alert("Pick an end time.");
+      if (payload.end_at <= payload.start_at) return alert("End time must be after start time.");
+
+      if (drawId) {
+        await api("/api/admin/draws/update", { method: "POST", body: { ...payload, draw_id: drawId } });
+        alert("Updated event #" + drawId);
+      } else {
+        const res = await api("/api/admin/draws", { method: "POST", body: payload });
+        alert("Created event #" + res.draw_id);
+      }
+
+      await refresh();
+      activeTab = "admin";
+      render();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  async function setSlotStatus(slotNum, status) {
+    const drawId = slotDrawId(slotNum);
+    if (!drawId) return alert("No event in this slot.");
+    await setDrawStatus(drawId, status);
+    await renderEventSlots();
+  }
+
+  async function clearSlot(slotNum) {
+    const drawId = slotDrawId(slotNum);
+    if (!drawId) return alert("No event in this slot.");
+    await clearDraw(drawId);
+    await renderEventSlots();
+  }
+
+  async function deleteSlot(slotNum) {
+    const drawId = slotDrawId(slotNum);
+    if (!drawId) return alert("No event in this slot.");
+    await deleteDraw(drawId);
+    await renderEventSlots();
+  }
+
+
   async function createDrawFromSettings() {
     try {
       const title = $("#fg-event-title")?.value.trim() || "Other Event Draw";
@@ -1010,7 +1142,10 @@
     .fg-event-color-4 { background:#261417; border-color:#d65f73; }
     .fg-winner-line { color:#9affc3 !important; font-weight:900; }
     .fg-entry-actions { display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:6px; margin-top:8px; }
+    .fg-slot-actions { display:grid; grid-template-columns:1fr 1fr 1fr 1fr 1fr; gap:6px; margin-top:8px; }
+    .fg-event-slot { margin-top:10px; }
     .fg-mini { padding:7px; border:0; border-radius:9px; background:#2f3447; color:white; font-weight:800; }
+    .fg-mini:disabled { opacity:.45; cursor:not-allowed; }
     .fg-mini.good { background:#176b3a; }
     .fg-mini.badbtn { background:#7a2020; }
     .fg-status { display:inline-block; padding:4px 8px; border-radius:999px; font-size:11px; font-weight:900; margin:3px 0; }
