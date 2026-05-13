@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.23
+// @version      1.0.24
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -142,6 +142,7 @@
         <button data-tab="overview">Overview</button>
         <button data-tab="entry">Entry</button>
         <button data-tab="points">Points</button>
+        <button data-tab="winners">Winners</button>
         <button data-tab="admin" class="fg-admin-tab">Admin</button>
       </div>
       <div class="fg-body"></div>
@@ -223,6 +224,7 @@
     if (activeTab === "overview") return renderOverview();
     if (activeTab === "entry") return renderEntry();
     if (activeTab === "points") return renderPoints();
+    if (activeTab === "winners") return renderWinners();
     if (activeTab === "admin" && isAdmin()) return renderAdmin();
     return renderOverview();
   }
@@ -253,7 +255,10 @@
       const box = $("#fg-event-overview-boxes");
       if (!box) return;
 
-      const events = (res.draws || []).filter(d => (d.draw_type || "rolling") === "event");
+      const events = (res.draws || [])
+        .filter(d => (d.draw_type || "rolling") === "event")
+        .filter(d => !d.winner_name && d.status !== "drawn" && d.status !== "deleted")
+        .slice(0, 5);
       if (!events.length) {
         box.innerHTML = "";
         return;
@@ -266,6 +271,7 @@
             <b>#${esc(d.id)} — ${esc(d.title)}</b>
             <span>Prize: ${esc(d.event_prize || d.prize_label || "Prize")}</span>
             <span>Cost: ${esc(d.point_cost || 1)} point(s)</span>
+            <span>Max per player: ${esc(d.max_entries_per_player || 1)}</span>
             <span>Starts: ${esc(fmtTime(d.start_at))}</span>
             <span>Ends: ${esc(fmtTime(d.end_at))} • ${esc(countdownText(d.end_at))}</span>
             <span>Entered: ${esc(d.total_entry_count || d.entry_count || 0)}</span>
@@ -444,7 +450,7 @@
 
       const draws = (res.draws || []).filter(d => d.status === "open");
       sel.innerHTML = draws.length
-        ? draws.map(d => `<option value="${esc(d.id)}">#${esc(d.id)} • ${esc(d.title)} • Prize: ${esc(d.event_prize || d.prize_label || "Prize")} • Cost: ${esc(d.point_cost || 1)} pt(s)</option>`).join("")
+        ? draws.map(d => `<option value="${esc(d.id)}">#${esc(d.id)} • ${esc(d.title)} • Prize: ${esc(d.event_prize || d.prize_label || "Prize")} • Cost: ${esc(d.point_cost || 1)} pt(s) • Max: ${esc(d.max_entries_per_player || 1)} • Max: ${esc(d.max_entries_per_player || 1)}</option>`).join("")
         : `<option value="">No open draws</option>`;
 
       $("#fg-selected-entry-status").textContent = draws.length
@@ -485,6 +491,38 @@
         : `<div class="fg-muted">No point requests yet.</div>`;
     } catch (e) {
       alert(e.message);
+    }
+  }
+
+
+  async function renderWinners() {
+    setTabClasses();
+    $(".fg-body").innerHTML = `<div class="fg-card"><b>Loading winners...</b></div>`;
+    try {
+      const res = await api("/api/winners");
+      const winners = res.winners || [];
+      $(".fg-body").innerHTML = `
+        <div class="fg-hero">
+          <div class="fg-kicker">WINNERS</div>
+          <h2>Finished Draws</h2>
+          <div class="fg-muted">Winners from completed events and jackpot draws.</div>
+        </div>
+        ${
+          winners.length
+            ? winners.map((w, idx) => `
+              <div class="fg-card fg-event-card fg-event-color-${idx % 5}">
+                <b>#${esc(w.id)} — ${esc(w.title)}</b>
+                <span>Prize: ${esc(w.event_prize || w.prize_label || "Prize")}</span>
+                <span class="fg-winner-line">Winner: ${esc(w.winner_name)} [${esc(w.winner_player_id)}]</span>
+                <span>Status: ${esc(w.status)}</span>
+                ${w.draw_type === "event" ? `<span>Event ended: ${esc(fmtTime(w.end_at))}</span>` : ""}
+              </div>
+            `).join("")
+            : `<div class="fg-card"><b>No winners yet</b><span>Finished event winners will show here.</span></div>`
+        }
+      `;
+    } catch (e) {
+      renderError(e.message);
     }
   }
 
@@ -576,13 +614,15 @@
 
       <div class="fg-card private">
         <b>Other Events / Draws</b>
-        <p class="fg-muted">Create extra event draws separate from the rolling jackpot. Event prize is shown as text; point cost controls the minimum points needed to enter.</p>
+        <p class="fg-muted">Create up to 5 event draws separate from the rolling jackpot. Finished events move to Winners.</p>
         <label>Event Title</label>
         <input class="fg-input" id="fg-event-title" placeholder="Event draw title">
         <label>Prize</label>
         <input class="fg-input" id="fg-event-prize" placeholder="Example: 50m cash / Xanax bundle / Donator Pack">
         <label>Cost of Entry Per Point</label>
         <input class="fg-input" id="fg-event-point-cost" type="number" min="1" value="1">
+        <label>Max Entries/Points Per Player</label>
+        <input class="fg-input" id="fg-event-max-entries" type="number" min="1" value="1">
         <label>Start Time</label>
         <input class="fg-input" id="fg-event-start" type="datetime-local">
         <label>End Time</label>
@@ -801,6 +841,7 @@
       const title = $("#fg-event-title")?.value.trim() || "Other Event Draw";
       const eventPrize = $("#fg-event-prize")?.value.trim() || "Event Prize";
       const pointCost = Number($("#fg-event-point-cost")?.value || 1);
+      const maxEntries = Number($("#fg-event-max-entries")?.value || 1);
       const base = 0;
       const entryValue = 0;
       const eventStart = $("#fg-event-start")?.value ? Math.floor(new Date($("#fg-event-start").value).getTime() / 1000) : null;
@@ -809,6 +850,7 @@
       if (!title) return alert("Enter an event title.");
       if (!eventPrize) return alert("Enter a prize.");
       if (!pointCost || pointCost < 1) return alert("Cost of entry must be at least 1 point.");
+      if (!maxEntries || maxEntries < 1) return alert("Max entries must be at least 1.");
       if (!eventStart) return alert("Pick a start time.");
       if (!eventEnd) return alert("Pick an end time.");
       if (eventEnd <= eventStart) return alert("End time must be after start time.");
@@ -827,7 +869,8 @@
           status: "open",
           draw_type: "event",
           start_at: eventStart,
-          end_at: eventEnd
+          end_at: eventEnd,
+          max_entries_per_player: maxEntries
         }
       });
 
@@ -851,7 +894,7 @@
           <div class="fg-entry">
             <div><b>#${esc(d.id)} — ${esc(d.title)}</b></div>
             <div>${statusPill(d.status)}</div>
-            <div class="fg-muted">Prize: ${esc(d.event_prize || d.prize_label || "Prize")} • Cost: ${esc(d.point_cost || 1)} pt(s)</div>
+            <div class="fg-muted">Prize: ${esc(d.event_prize || d.prize_label || "Prize")} • Cost: ${esc(d.point_cost || 1)} pt(s) • Max: ${esc(d.max_entries_per_player || 1)}</div>
             <div class="fg-muted">Starts: ${esc(fmtTime(d.start_at))} • Ends: ${esc(fmtTime(d.end_at))} • ${esc(countdownText(d.end_at))}</div>
             <div class="fg-muted">Jackpot: ${money(d.total_pool)} • Approved: ${esc(d.approved_entry_count || d.entry_count || 0)} • Points: ${esc(d.approved_points_total || 0)} • Pending: ${esc(d.pending_entry_count || 0)}</div>
             ${d.winner_name ? `<div class="fg-winner-line">Winner: ${esc(d.winner_name)} [${esc(d.winner_player_id)}] — Give reward</div>` : ""}
