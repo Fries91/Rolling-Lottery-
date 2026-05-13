@@ -236,6 +236,22 @@ def ensure_points(conn):
     """)
 
 
+def ensure_point_requests(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS point_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_id INTEGER NOT NULL,
+            name TEXT NOT NULL DEFAULT 'Unknown',
+            amount INTEGER NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            reviewed_by INTEGER,
+            reviewed_at INTEGER,
+            created_at INTEGER NOT NULL
+        )
+    """)
+
+
 def init_db():
     with db() as conn:
         ensure_users(conn)
@@ -594,13 +610,16 @@ def enter(s):
 
         try:
             conn.execute("""
-                INSERT INTO entries (giveaway_id, player_id, name, status, points_spent, created_at)
-                VALUES (?, ?, ?, 'pending', ?, ?)
-            """, (g["id"], s["player_id"], s["name"], points_spent, now_ts()))
+                INSERT INTO entries (giveaway_id, player_id, name, status, points_spent, reviewed_at, created_at)
+                VALUES (?, ?, ?, 'approved', ?, ?, ?)
+            """, (g["id"], s["player_id"], s["name"], points_spent, now_ts(), now_ts()))
+            add_points(conn, int(s["player_id"]), s["name"], -points_spent, "draw entry", None)
         except sqlite3.IntegrityError:
-            return jsonify({"ok": True, "message": "You already have an entry request for this draw"})
+            return jsonify({"ok": True, "message": "You already entered this draw"})
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
 
-    return jsonify({"ok": True, "message": "Entry request submitted for admin approval"})
+    return jsonify({"ok": True, "message": "Entry submitted and points deducted"})
 
 @app.get("/api/admin/entries")
 @admin_required
@@ -651,13 +670,14 @@ def admin_entry_status(s):
         points_spent = int(row["points_spent"] or 1)
 
         try:
-            # Deduct points only when moving into approved.
-            if old_status != "approved" and new_status == "approved":
-                add_points(conn, int(row["player_id"]), row["name"], -points_spent, "draw entry approved", int(s["player_id"]))
+            # Points are deducted when the player submits the entry.
+            # If admin rejects, refund the points.
+            if old_status != "rejected" and new_status == "rejected":
+                add_points(conn, int(row["player_id"]), row["name"], points_spent, "draw entry rejected/refunded", int(s["player_id"]))
 
-            # Refund points when moving out of approved.
-            if old_status == "approved" and new_status != "approved":
-                add_points(conn, int(row["player_id"]), row["name"], points_spent, "draw entry unapproved/refunded", int(s["player_id"]))
+            # If admin changes rejected back to pending/approved, hold the points again.
+            if old_status == "rejected" and new_status != "rejected":
+                add_points(conn, int(row["player_id"]), row["name"], -points_spent, "draw entry restored", int(s["player_id"]))
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
 
@@ -1035,6 +1055,7 @@ def admin_clear_draw(s):
 
     with db() as conn:
         ensure_giveaways(conn)
+        ensure_points(conn)
         row = conn.execute(
             "SELECT id, draw_type FROM giveaways WHERE id=? AND deleted_at IS NULL",
             (draw_id,)
@@ -1045,6 +1066,15 @@ def admin_clear_draw(s):
 
         if row["draw_type"] == "rolling":
             return jsonify({"ok": False, "error": "Use rolling jackpot controls for the rolling draw"}), 400
+
+        # refund entries before clearing
+        entries = conn.execute("""
+            SELECT player_id, name, points_spent, status
+            FROM entries
+            WHERE giveaway_id=? AND status!='rejected'
+        """, (draw_id,)).fetchall()
+        for erow in entries:
+            add_points(conn, int(erow["player_id"]), erow["name"], int(erow["points_spent"] or 1), "event cleared/refunded", int(s["player_id"]))
 
         conn.execute("DELETE FROM entries WHERE giveaway_id=?", (draw_id,))
         conn.execute("""
@@ -1058,7 +1088,6 @@ def admin_clear_draw(s):
         """, (now_ts(), draw_id))
 
     return jsonify({"ok": True})
-
 
 @app.post("/api/admin/draws/status")
 @admin_required
@@ -1080,6 +1109,106 @@ def admin_draw_status(s):
         )
 
     return jsonify({"ok": True})
+
+
+@app.post("/api/points/request")
+@login_required
+def api_points_request(s):
+    data = request.get_json(force=True, silent=True) or {}
+    amount = int(data.get("amount") or 0)
+    reason = (data.get("reason") or "").strip()
+
+    if amount <= 0:
+        return jsonify({"ok": False, "error": "Request amount must be at least 1 point"}), 400
+    if amount > 100000:
+        return jsonify({"ok": False, "error": "Point request amount is too high"}), 400
+
+    with db() as conn:
+        ensure_point_requests(conn)
+        conn.execute("""
+            INSERT INTO point_requests (player_id, name, amount, reason, status, created_at)
+            VALUES (?, ?, ?, ?, 'pending', ?)
+        """, (s["player_id"], s["name"], amount, reason, now_ts()))
+
+    return jsonify({"ok": True, "message": "Point request sent to admin"})
+
+
+@app.get("/api/points/requests")
+@login_required
+def api_my_point_requests(s):
+    with db() as conn:
+        ensure_point_requests(conn)
+        rows = conn.execute("""
+            SELECT id, amount, reason, status, reviewed_at, created_at
+            FROM point_requests
+            WHERE player_id=?
+            ORDER BY id DESC
+            LIMIT 20
+        """, (s["player_id"],)).fetchall()
+
+    return jsonify({"ok": True, "requests": [dict(r) for r in rows]})
+
+
+@app.get("/api/admin/points/requests")
+@admin_required
+def admin_points_requests(s):
+    with db() as conn:
+        ensure_point_requests(conn)
+        rows = conn.execute("""
+            SELECT id, player_id, name, amount, reason, status, reviewed_by, reviewed_at, created_at
+            FROM point_requests
+            ORDER BY
+                CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,
+                id DESC
+            LIMIT 100
+        """).fetchall()
+
+    return jsonify({"ok": True, "requests": [dict(r) for r in rows]})
+
+
+@app.post("/api/admin/points/requests")
+@admin_required
+def admin_points_request_action(s):
+    data = request.get_json(force=True, silent=True) or {}
+    request_id = int(data.get("request_id") or 0)
+    action = (data.get("action") or "").strip().lower()
+
+    if not request_id:
+        return jsonify({"ok": False, "error": "Missing request id"}), 400
+    if action not in ("approve", "reject"):
+        return jsonify({"ok": False, "error": "Invalid action"}), 400
+
+    with db() as conn:
+        ensure_point_requests(conn)
+        row = conn.execute(
+            "SELECT * FROM point_requests WHERE id=?",
+            (request_id,)
+        ).fetchone()
+
+        if not row:
+            return jsonify({"ok": False, "error": "Point request not found"}), 404
+        if row["status"] != "pending":
+            return jsonify({"ok": False, "error": "Point request already reviewed"}), 400
+
+        new_status = "approved" if action == "approve" else "rejected"
+
+        if action == "approve":
+            add_points(
+                conn,
+                int(row["player_id"]),
+                row["name"],
+                int(row["amount"]),
+                f"approved point request #{request_id}",
+                int(s["player_id"])
+            )
+
+        conn.execute("""
+            UPDATE point_requests
+            SET status=?, reviewed_by=?, reviewed_at=?
+            WHERE id=?
+        """, (new_status, int(s["player_id"]), now_ts(), request_id))
+
+    return jsonify({"ok": True, "status": new_status})
 
 
 if __name__ == "__main__":
