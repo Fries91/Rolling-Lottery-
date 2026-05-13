@@ -1174,6 +1174,43 @@ def admin_clear_draw(s):
 
     return jsonify({"ok": True})
 
+@app.post("/api/admin/draws/activate")
+@admin_required
+def admin_activate_draw(s):
+    data = request.get_json(force=True, silent=True) or {}
+    draw_id = int(data.get("draw_id") or 0)
+    duration_seconds = int(data.get("duration_seconds") or (7 * 24 * 60 * 60))
+    if not draw_id:
+        return jsonify({"ok": False, "error": "Missing draw id"}), 400
+    if duration_seconds < 60:
+        duration_seconds = 60
+
+    start_at = now_ts()
+    end_at = start_at + duration_seconds
+
+    with db() as conn:
+        ensure_giveaways(conn)
+        row = conn.execute("SELECT id, draw_type FROM giveaways WHERE id=? AND deleted_at IS NULL", (draw_id,)).fetchone()
+        if not row:
+            return jsonify({"ok": False, "error": "Draw not found"}), 404
+        if row["draw_type"] != "event":
+            return jsonify({"ok": False, "error": "Only event draws can be activated here"}), 400
+
+        conn.execute("""
+            UPDATE giveaways
+            SET status='open',
+                start_at=?,
+                end_at=?,
+                draw_at=?,
+                winner_player_id=NULL,
+                winner_name=NULL,
+                auto_drawn_at=NULL,
+                updated_at=?
+            WHERE id=?
+        """, (start_at, end_at, end_at, now_ts(), draw_id))
+
+    return jsonify({"ok": True, "start_at": start_at, "end_at": end_at})
+
 @app.post("/api/admin/draws/status")
 @admin_required
 def admin_draw_status(s):
@@ -1195,6 +1232,24 @@ def admin_draw_status(s):
 
     return jsonify({"ok": True})
 
+
+@app.get("/api/admin/winner-notifications")
+@admin_required
+def admin_winner_notifications(s):
+    with db() as conn:
+        ensure_giveaways(conn)
+        ensure_entries(conn)
+        auto_draw_ended_events(conn)
+        rows = conn.execute("""
+            SELECT id, title, prize_label, event_prize, winner_player_id, winner_name, auto_drawn_at, updated_at
+            FROM giveaways
+            WHERE deleted_at IS NULL
+              AND draw_type='event'
+              AND winner_player_id IS NOT NULL
+            ORDER BY COALESCE(auto_drawn_at, updated_at, created_at) DESC
+            LIMIT 20
+        """).fetchall()
+    return jsonify({"ok": True, "winners": [dict(r) for r in rows]})
 
 @app.get("/api/winners")
 def api_winners():
