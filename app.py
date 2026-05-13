@@ -171,6 +171,40 @@ def ensure_entries(conn):
     add_col(conn, "entries", "reviewed_at", "reviewed_at INTEGER")
 
 
+def ensure_points(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS point_balances (
+            player_id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL DEFAULT 'Unknown',
+            balance INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS point_ledger (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_id INTEGER NOT NULL,
+            name TEXT NOT NULL DEFAULT 'Unknown',
+            delta INTEGER NOT NULL,
+            reason TEXT NOT NULL DEFAULT 'adjustment',
+            created_by INTEGER,
+            created_at INTEGER NOT NULL
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS point_claims (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_id INTEGER NOT NULL,
+            claim_date TEXT NOT NULL,
+            amount INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            UNIQUE(player_id, claim_date)
+        )
+    """)
+
+
 def init_db():
     with db() as conn:
         ensure_users(conn)
@@ -298,6 +332,8 @@ def clean_giveaway(conn, g, private=False):
         "rollover_pool": int(g["rollover_pool"] or 0),
         "player_cut": computed_pool * pp // 100,
         "rollover_cut": computed_pool * rp // 100,
+        "next_starting_jackpot": computed_pool * rp // 100,
+        "rolling_jackpot": computed_pool,
         "entry_is_free": True,
         "approval_required": True,
     }
@@ -308,9 +344,71 @@ def clean_giveaway(conn, g, private=False):
     return out
 
 
+def get_point_balance(conn, player_id, name=None):
+    ensure_points(conn)
+    row = conn.execute(
+        "SELECT player_id, name, balance, updated_at FROM point_balances WHERE player_id=?",
+        (player_id,)
+    ).fetchone()
+    if not row:
+        t = now_ts()
+        conn.execute(
+            "INSERT INTO point_balances (player_id, name, balance, updated_at) VALUES (?, ?, 0, ?)",
+            (player_id, name or f"Player {player_id}", t)
+        )
+        row = conn.execute(
+            "SELECT player_id, name, balance, updated_at FROM point_balances WHERE player_id=?",
+            (player_id,)
+        ).fetchone()
+    return dict(row)
+
+
+def add_points(conn, player_id, name, amount, reason, created_by=None):
+    ensure_points(conn)
+    player_id = int(player_id)
+    amount = int(amount)
+    if amount == 0:
+        raise ValueError("Amount cannot be 0")
+
+    safe_name = (name or f"Player {player_id}").strip() or f"Player {player_id}"
+    t = now_ts()
+
+    row = conn.execute(
+        "SELECT balance FROM point_balances WHERE player_id=?",
+        (player_id,)
+    ).fetchone()
+
+    if not row:
+        current = 0
+        conn.execute(
+            "INSERT INTO point_balances (player_id, name, balance, updated_at) VALUES (?, ?, 0, ?)",
+            (player_id, safe_name, t)
+        )
+    else:
+        current = int(row["balance"] or 0)
+
+    new_balance = current + amount
+    if new_balance < 0:
+        raise ValueError("Not enough points")
+
+    conn.execute(
+        "UPDATE point_balances SET name=?, balance=?, updated_at=? WHERE player_id=?",
+        (safe_name, new_balance, t, player_id)
+    )
+    conn.execute(
+        "INSERT INTO point_ledger (player_id, name, delta, reason, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (player_id, safe_name, amount, reason or "adjustment", created_by, t)
+    )
+    return new_balance
+
+
+def today_key():
+    return time.strftime("%Y-%m-%d", time.gmtime(now_ts()))
+
+
 @app.get("/")
 def root():
-    return jsonify({"ok": True, "app": APP_NAME, "mode": "free-entry-admin-approval"})
+    return jsonify({"ok": True, "app": APP_NAME, "mode": "true-rolling-jackpot"})
 
 
 @app.get("/api/health")
@@ -503,28 +601,34 @@ def admin_draw(s):
 @app.post("/api/admin/roll")
 @admin_required
 def admin_roll(s):
+    # True rolling jackpot:
+    # the next giveaway starting jackpot is ONLY the previous giveaway's 20% rollover.
     data = request.get_json(force=True, silent=True) or {}
     t = now_ts()
+
     with db() as conn:
+        current = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
+        current_payload = clean_giveaway(conn, current, True)
+        next_base_payout = int(current_payload.get("rollover_cut") or 0)
+
         conn.execute("""
             INSERT INTO giveaways
             (title, prize_label, total_pool, base_payout, entry_item_name, entry_item_value,
              player_percent, rollover_percent, reserve_percent, rollover_pool, status, draw_at,
              created_by, created_at, updated_at)
-            VALUES (?, ?, 0, ?, ?, ?, 60, 20, 20, ?, 'open', NULL, ?, ?, ?)
+            VALUES (?, ?, 0, ?, ?, ?, 60, 20, 20, 0, 'open', NULL, ?, ?, ?)
         """, (
-            (data.get("title") or "Fries91's Giveaway").strip(),
-            (data.get("prize_label") or "Faction/Event Prize").strip(),
-            int(data.get("base_payout") or 0),
-            (data.get("entry_item_name") or "Xanax").strip(),
-            int(data.get("entry_item_value") or 0),
-            int(data.get("rollover_pool") or 0),
+            (data.get("title") or current["title"] or "Fries91's Giveaway").strip(),
+            (data.get("prize_label") or current["prize_label"] or "Faction/Event Prize").strip(),
+            next_base_payout,
+            (data.get("entry_item_name") or current["entry_item_name"] or "Xanax").strip(),
+            int(data.get("entry_item_value") or current["entry_item_value"] or 0),
             s["player_id"],
             t,
             t,
         ))
-    return jsonify({"ok": True})
 
+    return jsonify({"ok": True, "next_base_payout": next_base_payout})
 
 @app.post("/api/admin/status")
 @admin_required
@@ -537,6 +641,91 @@ def admin_status(s):
         g = conn.execute("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1").fetchone()
         conn.execute("UPDATE giveaways SET status=?, updated_at=? WHERE id=?", (status, now_ts(), g["id"]))
     return jsonify({"ok": True})
+
+
+@app.get("/api/points")
+@login_required
+def api_points(s):
+    with db() as conn:
+        bal = get_point_balance(conn, int(s["player_id"]), s["name"])
+        ledger = conn.execute("""
+            SELECT delta, reason, created_at
+            FROM point_ledger
+            WHERE player_id=?
+            ORDER BY id DESC
+            LIMIT 20
+        """, (s["player_id"],)).fetchall()
+
+        claimed_today = bool(conn.execute(
+            "SELECT id FROM point_claims WHERE player_id=? AND claim_date=?",
+            (s["player_id"], today_key())
+        ).fetchone())
+
+    return jsonify({
+        "ok": True,
+        "points": bal,
+        "claimed_today": claimed_today,
+        "daily_claim_amount": 1,
+        "ledger": [dict(r) for r in ledger]
+    })
+
+
+@app.post("/api/points/claim-daily")
+@login_required
+def api_claim_daily(s):
+    with db() as conn:
+        ensure_points(conn)
+        day = today_key()
+        if conn.execute(
+            "SELECT id FROM point_claims WHERE player_id=? AND claim_date=?",
+            (s["player_id"], day)
+        ).fetchone():
+            return jsonify({"ok": False, "error": "Daily points already claimed"}), 400
+
+        conn.execute(
+            "INSERT INTO point_claims (player_id, claim_date, amount, created_at) VALUES (?, ?, ?, ?)",
+            (s["player_id"], day, 1, now_ts())
+        )
+        new_balance = add_points(conn, int(s["player_id"]), s["name"], 1, "daily free claim", None)
+
+    return jsonify({"ok": True, "balance": new_balance})
+
+
+@app.get("/api/admin/points")
+@admin_required
+def admin_points_list(s):
+    with db() as conn:
+        ensure_points(conn)
+        rows = conn.execute("""
+            SELECT player_id, name, balance, updated_at
+            FROM point_balances
+            ORDER BY balance DESC, updated_at DESC
+            LIMIT 100
+        """).fetchall()
+    return jsonify({"ok": True, "balances": [dict(r) for r in rows]})
+
+
+@app.post("/api/admin/points")
+@admin_required
+def admin_points_adjust(s):
+    data = request.get_json(force=True, silent=True) or {}
+    player_id = int(data.get("player_id") or 0)
+    name = (data.get("name") or f"Player {player_id}").strip()
+    amount = int(data.get("amount") or 0)
+    reason = (data.get("reason") or "admin adjustment").strip()
+
+    if not player_id:
+        return jsonify({"ok": False, "error": "Missing player id"}), 400
+    if amount == 0:
+        return jsonify({"ok": False, "error": "Amount cannot be 0"}), 400
+
+    try:
+        with db() as conn:
+            new_balance = add_points(conn, player_id, name, amount, reason, int(s["player_id"]))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    return jsonify({"ok": True, "player_id": player_id, "balance": new_balance})
 
 
 if __name__ == "__main__":
