@@ -119,7 +119,8 @@ def ensure_giveaways(conn):
             created_by INTEGER,
             created_at INTEGER NOT NULL DEFAULT 0,
             updated_at INTEGER NOT NULL DEFAULT 0,
-            deleted_at INTEGER
+            deleted_at INTEGER,
+            draw_type TEXT NOT NULL DEFAULT 'rolling'
         )
     """)
     for col, sql in [
@@ -141,6 +142,7 @@ def ensure_giveaways(conn):
         ("created_at", "created_at INTEGER NOT NULL DEFAULT 0"),
         ("updated_at", "updated_at INTEGER NOT NULL DEFAULT 0"),
         ("deleted_at", "deleted_at INTEGER"),
+        ("draw_type", "draw_type TEXT NOT NULL DEFAULT 'rolling'"),
     ]:
         add_col(conn, "giveaways", col, sql)
 
@@ -162,6 +164,7 @@ def ensure_entries(conn):
                 status TEXT NOT NULL DEFAULT 'pending',
                 reviewed_by INTEGER,
                 reviewed_at INTEGER,
+                points_spent INTEGER NOT NULL DEFAULT 1,
                 created_at INTEGER NOT NULL,
                 UNIQUE(giveaway_id, player_id)
             )
@@ -171,6 +174,7 @@ def ensure_entries(conn):
     add_col(conn, "entries", "status", "status TEXT NOT NULL DEFAULT 'pending'")
     add_col(conn, "entries", "reviewed_by", "reviewed_by INTEGER")
     add_col(conn, "entries", "reviewed_at", "reviewed_at INTEGER")
+    add_col(conn, "entries", "points_spent", "points_spent INTEGER NOT NULL DEFAULT 1")
 
 
 def ensure_points(conn):
@@ -225,6 +229,7 @@ def init_db():
         """, ("Fries91's Giveaway",))
         conn.execute("UPDATE giveaways SET created_at=? WHERE created_at IS NULL OR created_at=0", (t,))
         conn.execute("UPDATE giveaways SET updated_at=? WHERE updated_at IS NULL OR updated_at=0", (t,))
+        conn.execute("UPDATE giveaways SET draw_type='rolling' WHERE draw_type IS NULL OR draw_type=''")
 
         if not conn.execute("SELECT id FROM giveaways ORDER BY id DESC LIMIT 1").fetchone():
             conn.execute("""
@@ -297,15 +302,29 @@ def count_entries(conn, giveaway_id, status=None):
     ).fetchone()["c"])
 
 
+def sum_entry_points(conn, giveaway_id, status=None):
+    if status:
+        return int(conn.execute(
+            "SELECT COALESCE(SUM(points_spent), 0) AS c FROM entries WHERE giveaway_id=? AND status=?",
+            (giveaway_id, status)
+        ).fetchone()["c"] or 0)
+    return int(conn.execute(
+        "SELECT COALESCE(SUM(points_spent), 0) AS c FROM entries WHERE giveaway_id=?",
+        (giveaway_id,)
+    ).fetchone()["c"] or 0)
+
+
 def clean_giveaway(conn, g, private=False):
     approved_count = count_entries(conn, g["id"], "approved")
+    approved_points = sum_entry_points(conn, g["id"], "approved")
+    pending_points = sum_entry_points(conn, g["id"], "pending")
     pending_count = count_entries(conn, g["id"], "pending")
     rejected_count = count_entries(conn, g["id"], "rejected")
     total_entry_count = count_entries(conn, g["id"])
 
     base_payout = int(g["base_payout"] or 0)
     entry_item_value = int(g["entry_item_value"] or 0)
-    computed_pool = base_payout + (approved_count * entry_item_value)
+    computed_pool = base_payout + (approved_points * entry_item_value)
 
     pp = int(g["player_percent"] or 60)
     rp = int(g["rollover_percent"] or 20)
@@ -315,6 +334,7 @@ def clean_giveaway(conn, g, private=False):
         "id": g["id"],
         "title": g["title"] or "Fries91's Giveaway",
         "prize_label": g["prize_label"] or "Prize",
+        "draw_type": g["draw_type"] if "draw_type" in g.keys() else "rolling",
         "base_payout": base_payout,
         "entry_item_name": g["entry_item_name"] or "Xanax",
         "entry_item_value": entry_item_value,
@@ -323,7 +343,9 @@ def clean_giveaway(conn, g, private=False):
         "pending_entry_count": pending_count,
         "rejected_entry_count": rejected_count,
         "total_entry_count": total_entry_count,
-        "entry_growth_total": approved_count * entry_item_value,
+        "approved_points_total": approved_points,
+        "pending_points_total": pending_points,
+        "entry_growth_total": approved_points * entry_item_value,
         "total_pool": computed_pool,
         "player_percent": pp,
         "rollover_percent": rp,
@@ -477,16 +499,16 @@ def state():
     private = bool(s and int(s["player_id"]) == ADMIN_PLAYER_ID)
 
     with db() as conn:
-        g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 1").fetchone()
+        g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL AND draw_type='rolling' ORDER BY id DESC LIMIT 1").fetchone()
         if not g:
             init_db()
-            g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 1").fetchone()
+            g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL AND draw_type='rolling' ORDER BY id DESC LIMIT 1").fetchone()
 
         user_entry = None
         user = None
         if s:
             erow = conn.execute(
-                "SELECT id, status, created_at, reviewed_at FROM entries WHERE giveaway_id=? AND player_id=?",
+                "SELECT id, status, points_spent, created_at, reviewed_at FROM entries WHERE giveaway_id=? AND player_id=?",
                 (g["id"], s["player_id"])
             ).fetchone()
             if erow:
@@ -504,57 +526,103 @@ def state():
 @app.post("/api/enter")
 @login_required
 def enter(s):
+    data = request.get_json(force=True, silent=True) or {}
+    draw_id = int(data.get("draw_id") or 0)
+    points_spent = int(data.get("points_spent") or 0)
+
+    if points_spent <= 0:
+        return jsonify({"ok": False, "error": "Enter at least 1 point"}), 400
+
     with db() as conn:
-        g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 1").fetchone()
+        ensure_points(conn)
+        bal = get_point_balance(conn, int(s["player_id"]), s["name"])
+        if int(bal["balance"] or 0) < points_spent:
+            return jsonify({"ok": False, "error": "Not enough points"}), 400
+
+        if draw_id:
+            g = conn.execute("SELECT * FROM giveaways WHERE id=? AND deleted_at IS NULL", (draw_id,)).fetchone()
+        else:
+            g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL AND draw_type='rolling' ORDER BY id DESC LIMIT 1").fetchone()
+
         if not g or g["status"] != "open":
-            return jsonify({"ok": False, "error": "Giveaway is not open"}), 400
+            return jsonify({"ok": False, "error": "Draw is not open"}), 400
+
         try:
             conn.execute("""
-                INSERT INTO entries (giveaway_id, player_id, name, status, created_at)
-                VALUES (?, ?, ?, 'pending', ?)
-            """, (g["id"], s["player_id"], s["name"], now_ts()))
+                INSERT INTO entries (giveaway_id, player_id, name, status, points_spent, created_at)
+                VALUES (?, ?, ?, 'pending', ?, ?)
+            """, (g["id"], s["player_id"], s["name"], points_spent, now_ts()))
         except sqlite3.IntegrityError:
-            return jsonify({"ok": True, "message": "You already have an entry request"})
-    return jsonify({"ok": True, "message": "Entry request submitted for admin approval"})
+            return jsonify({"ok": True, "message": "You already have an entry request for this draw"})
 
+    return jsonify({"ok": True, "message": "Entry request submitted for admin approval"})
 
 @app.get("/api/admin/entries")
 @admin_required
 def admin_entries(s):
+    draw_id = int(request.args.get("draw_id") or 0)
     with db() as conn:
-        g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 1").fetchone()
+        if draw_id:
+            g = conn.execute("SELECT * FROM giveaways WHERE id=? AND deleted_at IS NULL", (draw_id,)).fetchone()
+        else:
+            g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL AND draw_type='rolling' ORDER BY id DESC LIMIT 1").fetchone()
+
+        if not g:
+            return jsonify({"ok": True, "entries": []})
+
         rows = conn.execute("""
-            SELECT id, player_id, name, status, created_at, reviewed_by, reviewed_at
+            SELECT id, player_id, name, status, points_spent, created_at, reviewed_by, reviewed_at
             FROM entries
             WHERE giveaway_id=?
             ORDER BY
                 CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,
                 created_at ASC
         """, (g["id"],)).fetchall()
-    return jsonify({"ok": True, "entries": [dict(r) for r in rows]})
 
+    return jsonify({"ok": True, "draw_id": g["id"], "entries": [dict(r) for r in rows]})
 
 @app.post("/api/admin/entry-status")
 @admin_required
 def admin_entry_status(s):
     data = request.get_json(force=True, silent=True) or {}
     entry_id = int(data.get("entry_id") or 0)
-    status = (data.get("status") or "").strip().lower()
+    new_status = (data.get("status") or "").strip().lower()
 
-    if status not in ("pending", "approved", "rejected"):
+    if new_status not in ("pending", "approved", "rejected"):
         return jsonify({"ok": False, "error": "Invalid entry status"}), 400
     if not entry_id:
         return jsonify({"ok": False, "error": "Missing entry id"}), 400
 
     with db() as conn:
+        ensure_points(conn)
+        row = conn.execute(
+            "SELECT id, player_id, name, status, points_spent FROM entries WHERE id=?",
+            (entry_id,)
+        ).fetchone()
+        if not row:
+            return jsonify({"ok": False, "error": "Entry not found"}), 404
+
+        old_status = row["status"]
+        points_spent = int(row["points_spent"] or 1)
+
+        try:
+            # Deduct points only when moving into approved.
+            if old_status != "approved" and new_status == "approved":
+                add_points(conn, int(row["player_id"]), row["name"], -points_spent, "draw entry approved", int(s["player_id"]))
+
+            # Refund points when moving out of approved.
+            if old_status == "approved" and new_status != "approved":
+                add_points(conn, int(row["player_id"]), row["name"], points_spent, "draw entry unapproved/refunded", int(s["player_id"]))
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
         conn.execute("""
             UPDATE entries
             SET status=?, reviewed_by=?, reviewed_at=?
             WHERE id=?
-        """, (status, s["player_id"], now_ts(), entry_id))
+        """, (new_status, s["player_id"], now_ts(), entry_id))
 
     return jsonify({"ok": True})
-
 
 @app.post("/api/admin/giveaway")
 @admin_required
@@ -562,7 +630,7 @@ def admin_save(s):
     data = request.get_json(force=True, silent=True) or {}
     t = now_ts()
     with db() as conn:
-        g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 1").fetchone()
+        g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL AND draw_type='rolling' ORDER BY id DESC LIMIT 1").fetchone()
         conn.execute("""
             UPDATE giveaways
             SET title=?, prize_label=?, base_payout=?, entry_item_name=?, entry_item_value=?,
@@ -586,19 +654,25 @@ def admin_save(s):
 @admin_required
 def admin_draw(s):
     with db() as conn:
-        g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 1").fetchone()
+        g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL AND draw_type='rolling' ORDER BY id DESC LIMIT 1").fetchone()
         rows = conn.execute("""
-            SELECT player_id, name
+            SELECT player_id, name, points_spent
             FROM entries
             WHERE giveaway_id=? AND status='approved'
         """, (g["id"],)).fetchall()
         if not rows:
             return jsonify({"ok": False, "error": "No approved entries to draw"}), 400
-        winner = secrets.choice(rows)
+
+        pool = []
+        for row in rows:
+            weight = max(1, int(row["points_spent"] or 1))
+            for _ in range(weight):
+                pool.append(row)
+
+        winner = secrets.choice(pool)
         conn.execute("UPDATE giveaways SET status='drawn', winner_player_id=?, winner_name=?, updated_at=? WHERE id=?",
                      (winner["player_id"], winner["name"], now_ts(), g["id"]))
     return jsonify({"ok": True, "winner": {"player_id": winner["player_id"], "name": winner["name"]}})
-
 
 @app.post("/api/admin/roll")
 @admin_required
@@ -609,7 +683,7 @@ def admin_roll(s):
     t = now_ts()
 
     with db() as conn:
-        current = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 1").fetchone()
+        current = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL AND draw_type='rolling' ORDER BY id DESC LIMIT 1").fetchone()
         current_payload = clean_giveaway(conn, current, True)
         next_base_payout = int(current_payload.get("rollover_cut") or 0)
 
@@ -640,7 +714,7 @@ def admin_status(s):
     if status not in ("open", "closed", "drawn"):
         return jsonify({"ok": False, "error": "Invalid status"}), 400
     with db() as conn:
-        g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 1").fetchone()
+        g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL AND draw_type='rolling' ORDER BY id DESC LIMIT 1").fetchone()
         conn.execute("UPDATE giveaways SET status=?, updated_at=? WHERE id=?", (status, now_ts(), g["id"]))
     return jsonify({"ok": True})
 
@@ -755,6 +829,9 @@ def api_draws():
 def admin_create_draw(s):
     data = request.get_json(force=True, silent=True) or {}
     t = now_ts()
+    draw_type = (data.get("draw_type") or "event").strip().lower()
+    if draw_type not in ("rolling", "event"):
+        draw_type = "event"
 
     with db() as conn:
         ensure_giveaways(conn)
@@ -762,13 +839,13 @@ def admin_create_draw(s):
             INSERT INTO giveaways
             (title, prize_label, total_pool, base_payout, entry_item_name, entry_item_value,
              player_percent, rollover_percent, reserve_percent, rollover_pool, status, draw_at,
-             created_by, created_at, updated_at)
-            VALUES (?, ?, 0, ?, ?, ?, 60, 20, 20, ?, ?, ?, ?, ?, ?)
+             created_by, created_at, updated_at, draw_type)
+            VALUES (?, ?, 0, ?, ?, ?, 60, 20, 20, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            (data.get("title") or "Fries91's Giveaway").strip(),
-            (data.get("prize_label") or "Faction/Event Prize").strip(),
+            (data.get("title") or "Other Event Draw").strip(),
+            (data.get("prize_label") or "Event Prize").strip(),
             int(data.get("base_payout") or 0),
-            (data.get("entry_item_name") or "Xanax").strip(),
+            (data.get("entry_item_name") or "Free Points/Event").strip(),
             int(data.get("entry_item_value") or 0),
             int(data.get("rollover_pool") or 0),
             (data.get("status") or "open").strip().lower(),
@@ -776,11 +853,11 @@ def admin_create_draw(s):
             int(s["player_id"]),
             t,
             t,
+            draw_type,
         ))
         new_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
 
     return jsonify({"ok": True, "draw_id": int(new_id)})
-
 
 @app.post("/api/admin/draws/delete")
 @admin_required
