@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.31
+// @version      1.0.32
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -70,11 +70,14 @@
 
   function pointRowsHtml(conversion) {
     const c = conversion || {};
-    const base = Math.max(1, Number(c.base_value || 850000));
-    const items = c.items || [];
-    if (!items.length) {
-      return `<div class="fg-muted">No point conversion items set yet.</div>`;
-    }
+    const base = Math.max(1, Number(c.base_value || 820000));
+    const items = (c.items && c.items.length) ? c.items : [
+      { name: "Donator Pack", value: 23500000, points: Math.floor(23500000 / base) },
+      { name: "Feathery Hotel Coupon", value: 12000000, points: Math.floor(12000000 / base) },
+      { name: "Drug Pack", value: 4000000, points: Math.floor(4000000 / base) },
+      { name: "Erotic DVD", value: 3600000, points: Math.floor(3600000 / base) },
+      { name: "Xanax", value: 820000, points: Math.floor(820000 / base) },
+    ];
     return `
       <div class="fg-muted">1 point = ${money(base)} value. Item values are rounded down.</div>
       <table class="fg-point-table">
@@ -677,13 +680,13 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
 
       <div class="fg-card private">
         <b>Point Conversion Items</b>
-        <p class="fg-muted">Add up to 5 accepted items. Points use item value ÷ base point value, rounded down.</p>
+        <p class="fg-muted">Add up to 5 accepted items. Item names are locked. Change the item values any time. Points use item value ÷ base point value, rounded down.</p>
         <label>Base Value Per 1 Point</label>
-        <input class="fg-input" id="fg-point-base-value" type="number" min="1" value="850000">
+        <input class="fg-input" id="fg-point-base-value" type="number" min="1" value="820000">
         <div class="fg-point-admin-grid">
           ${[1,2,3,4,5].map(i => `
             <div class="fg-point-admin-row">
-              <input class="fg-input" id="fg-point-item-name-${i}" placeholder="Item ${i} name">
+              <div class="fg-locked-item" id="fg-point-item-name-${i}">Item ${i}</div>
               <input class="fg-input" id="fg-point-item-value-${i}" type="number" min="0" placeholder="Value">
             </div>
           `).join("")}
@@ -779,22 +782,31 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
 
   function fillPointConversionInputs(conversion) {
     const c = conversion || {};
-    const base = Math.max(1, Number(c.base_value || 850000));
+    const base = Math.max(1, Number(c.base_value || 820000));
     const baseInput = $("#fg-point-base-value");
     if (baseInput) baseInput.value = base;
+
+    const defaults = [
+      { name: "Donator Pack", value: 23500000 },
+      { name: "Feathery Hotel Coupon", value: 12000000 },
+      { name: "Drug Pack", value: 4000000 },
+      { name: "Erotic DVD", value: 3600000 },
+      { name: "Xanax", value: 820000 },
+    ];
 
     for (let i = 1; i <= 5; i++) {
       const nameEl = $(`#fg-point-item-name-${i}`);
       const valueEl = $(`#fg-point-item-value-${i}`);
-      if (nameEl) nameEl.value = "";
-      if (valueEl) valueEl.value = "";
+      const fallback = defaults[i - 1] || { name: "", value: 0 };
+      if (nameEl) nameEl.textContent = fallback.name;
+      if (valueEl) valueEl.value = fallback.value || "";
     }
 
-    (c.items || []).slice(0, 5).forEach((item, idx) => {
+    ((c.items && c.items.length) ? c.items : defaults).slice(0, 5).forEach((item, idx) => {
       const i = idx + 1;
       const nameEl = $(`#fg-point-item-name-${i}`);
       const valueEl = $(`#fg-point-item-value-${i}`);
-      if (nameEl) nameEl.value = item.name || "";
+      if (nameEl) nameEl.textContent = item.name || (defaults[idx]?.name || "");
       if (valueEl) valueEl.value = Number(item.value || 0);
     });
 
@@ -814,12 +826,12 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
 
   async function adminSavePointConversions() {
     try {
-      const baseValue = Math.max(1, Number($("#fg-point-base-value")?.value || 850000));
+      const baseValue = Math.max(1, Number($("#fg-point-base-value")?.value || 820000));
       const items = [];
       for (let i = 1; i <= 5; i++) {
-        const name = $(`#fg-point-item-name-${i}`)?.value.trim() || "";
+        const name = $(`#fg-point-item-name-${i}`)?.textContent.trim() || "";
         const value = Number($(`#fg-point-item-value-${i}`)?.value || 0);
-        if (name && value > 0) items.push({ name, value });
+        if (name && value > 0) items.push({ slot: i, name, value });
       }
       const res = await api("/api/admin/point-conversions", { method: "POST", body: { base_value: baseValue, items } });
       fillPointConversionInputs(res.conversion);
@@ -1388,6 +1400,7 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     .fg-card.win { border-color: rgba(90,255,170,.4); background:#13251d; }
     .fg-card.bad { border-color: rgba(255,90,90,.45); background:#2b1518; }
     .fg-input { width:100%; box-sizing:border-box; padding:10px; margin:7px 0 10px; border-radius:10px; border:1px solid rgba(255,255,255,.18); background:#0e1017; color:white; }
+    .fg-locked-item { width:100%; box-sizing:border-box; padding:10px; margin:7px 0 10px; border-radius:10px; border:1px solid rgba(255,255,255,.14); background:#141722; color:#ffe9a8; font-weight:900; }
     .fg-primary, .fg-secondary, .fg-warn { width:100%; padding:10px; margin:5px 0; border-radius:12px; border:0; color:white; font-weight:800; cursor:pointer; }
     .fg-primary { background:#6b38b6; }
     .fg-primary:disabled { opacity:.55; cursor:not-allowed; }
