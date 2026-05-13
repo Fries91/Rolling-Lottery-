@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.18
+// @version      1.0.19
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -520,6 +520,7 @@
         <label>End Time</label>
         <input class="fg-input" id="fg-event-end" type="datetime-local">
         <button class="fg-primary" id="fg-create-draw">Create Other Event Draw</button>
+        <div id="fg-event-create-note" class="fg-muted">After creation, the event will show on Overview.</div>
         <button class="fg-secondary" id="fg-load-draws">Load All Draws</button>
         <div id="fg-draws-list"></div>
       </div>
@@ -535,6 +536,10 @@
     $("#fg-roll").addEventListener("click", rollAdmin);
     $("#fg-draw").addEventListener("click", drawAdmin);
     $("#fg-load-entries").addEventListener("click", loadEntries);
+    $("#fg-points-save")?.addEventListener("click", adminAdjustPoints);
+    $("#fg-points-load")?.addEventListener("click", adminLoadPoints);
+    $("#fg-create-draw")?.addEventListener("click", createDrawFromSettings);
+    $("#fg-load-draws")?.addEventListener("click", loadDraws);
     $("#fg-open").addEventListener("click", () => setStatus("open"));
     $("#fg-close-giveaway").addEventListener("click", () => setStatus("closed"));
   }
@@ -673,6 +678,13 @@
       const eventStart = $("#fg-event-start")?.value ? Math.floor(new Date($("#fg-event-start").value).getTime() / 1000) : null;
       const eventEnd = $("#fg-event-end")?.value ? Math.floor(new Date($("#fg-event-end").value).getTime() / 1000) : null;
 
+      if (!title) return alert("Enter an event title.");
+      if (!eventPrize) return alert("Enter a prize.");
+      if (!pointCost || pointCost < 1) return alert("Cost of entry must be at least 1 point.");
+      if (!eventStart) return alert("Pick a start time.");
+      if (!eventEnd) return alert("Pick an end time.");
+      if (eventEnd <= eventStart) return alert("End time must be after start time.");
+
       const res = await api("/api/admin/draws", {
         method: "POST",
         body: {
@@ -690,11 +702,11 @@
           end_at: eventEnd
         }
       });
-      alert("Created event draw #" + res.draw_id);
+
+      alert("Created event draw #" + res.draw_id + ". It will now show on Overview.");
       await refresh();
-      activeTab = "admin";
+      activeTab = "overview";
       render();
-      await loadDraws();
     } catch (e) {
       alert(e.message);
     }
@@ -704,6 +716,7 @@
     try {
       const res = await api("/api/draws");
       const box = $("#fg-draws-list");
+      if (!box) return;
 
       box.innerHTML = (res.draws || []).length
         ? res.draws.map(d => `
