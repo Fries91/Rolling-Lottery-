@@ -1613,7 +1613,7 @@ def admin_points_request_action(s):
                 int(row["player_id"]),
                 row["name"],
                 int(row["amount"]),
-                f"approved point request #{request_id}",
+                f"approved point request #{request_id}: {row['reason'] or 'item conversion request'}",
                 int(s["player_id"])
             )
 
