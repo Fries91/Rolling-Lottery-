@@ -125,7 +125,8 @@ def ensure_giveaways(conn):
             point_cost INTEGER NOT NULL DEFAULT 1,
             start_at INTEGER,
             end_at INTEGER,
-            auto_drawn_at INTEGER
+            auto_drawn_at INTEGER,
+            max_entries_per_player INTEGER NOT NULL DEFAULT 1
         )
     """)
     for col, sql in [
@@ -155,6 +156,7 @@ def ensure_giveaways(conn):
         ("start_at", "start_at INTEGER"),
         ("end_at", "end_at INTEGER"),
         ("auto_drawn_at", "auto_drawn_at INTEGER"),
+        ("max_entries_per_player", "max_entries_per_player INTEGER NOT NULL DEFAULT 1"),
     ]:
         add_col(conn, "giveaways", col, sql)
 
@@ -385,6 +387,7 @@ def clean_giveaway(conn, g, private=False):
         "start_at": g["start_at"] if "start_at" in g.keys() else None,
         "end_at": g["end_at"] if "end_at" in g.keys() else None,
         "auto_drawn_at": g["auto_drawn_at"] if "auto_drawn_at" in g.keys() else None,
+        "max_entries_per_player": int(g["max_entries_per_player"] or 1) if "max_entries_per_player" in g.keys() else 1,
         "base_payout": base_payout,
         "entry_item_name": g["entry_item_name"] or "Xanax",
         "entry_item_value": entry_item_value,
@@ -607,6 +610,17 @@ def enter(s):
         minimum_cost = int(g["point_cost"] or 1) if "point_cost" in g.keys() else 1
         if points_spent < minimum_cost:
             return jsonify({"ok": False, "error": f"This draw costs at least {minimum_cost} point(s) to enter"}), 400
+
+        max_entries = int(g["max_entries_per_player"] or 1) if "max_entries_per_player" in g.keys() else 1
+        if points_spent > max_entries:
+            return jsonify({"ok": False, "error": f"This draw allows max {max_entries} point entry per player"}), 400
+
+        already = conn.execute(
+            "SELECT id FROM entries WHERE giveaway_id=? AND player_id=?",
+            (g["id"], s["player_id"])
+        ).fetchone()
+        if already:
+            return jsonify({"ok": True, "message": "You already entered this draw"})
 
         try:
             conn.execute("""
@@ -968,6 +982,9 @@ def admin_create_draw(s):
 
     start_at = int(data["start_at"]) if str(data.get("start_at") or "").isdigit() else None
     end_at = int(data["end_at"]) if str(data.get("end_at") or "").isdigit() else None
+    max_entries_per_player = int(data.get("max_entries_per_player") or 1)
+    if max_entries_per_player < 1:
+        max_entries_per_player = 1
 
     if start_at and end_at and end_at <= start_at:
         return jsonify({"ok": False, "error": "End time must be after start time"}), 400
@@ -975,11 +992,20 @@ def admin_create_draw(s):
     with db() as conn:
         ensure_giveaways(conn)
 
+        if draw_type == "event":
+            event_count = conn.execute("""
+                SELECT COUNT(*) AS c
+                FROM giveaways
+                WHERE deleted_at IS NULL AND draw_type='event'
+            """).fetchone()["c"]
+            if int(event_count or 0) >= 5:
+                return jsonify({"ok": False, "error": "Maximum of 5 other events reached. Delete or clear one first."}), 400
+
         columns = [
             "title", "prize_label", "total_pool", "base_payout", "entry_item_name", "entry_item_value",
             "player_percent", "rollover_percent", "reserve_percent", "rollover_pool", "status", "draw_at",
             "created_by", "created_at", "updated_at", "draw_type", "event_prize", "point_cost",
-            "start_at", "end_at", "auto_drawn_at"
+            "start_at", "end_at", "auto_drawn_at", "max_entries_per_player"
         ]
         values = [
             (data.get("title") or "Other Event Draw").strip(),
@@ -1003,6 +1029,7 @@ def admin_create_draw(s):
             start_at,
             end_at,
             None,
+            max_entries_per_player,
         ]
 
         extra_cols, extra_vals = giveaway_legacy_insert_columns(conn)
@@ -1109,6 +1136,28 @@ def admin_draw_status(s):
         )
 
     return jsonify({"ok": True})
+
+
+@app.get("/api/winners")
+def api_winners():
+    s = session()
+    private = bool(s and int(s["player_id"]) == ADMIN_PLAYER_ID)
+
+    with db() as conn:
+        ensure_giveaways(conn)
+        ensure_entries(conn)
+        auto_draw_ended_events(conn)
+        rows = conn.execute("""
+            SELECT *
+            FROM giveaways
+            WHERE deleted_at IS NULL
+              AND winner_player_id IS NOT NULL
+            ORDER BY COALESCE(auto_drawn_at, updated_at, created_at) DESC
+            LIMIT 100
+        """).fetchall()
+        winners = [clean_giveaway(conn, r, private) for r in rows]
+
+    return jsonify({"ok": True, "winners": winners})
 
 
 @app.post("/api/points/request")
