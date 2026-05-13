@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.13
+// @version      1.0.15
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -199,6 +199,7 @@
       <div class="fg-grid">
         <div class="fg-card"><b>Player Prize 60%</b><span>${money(g.player_cut)}</span></div>
         <div class="fg-card"><b>Approved Entries</b><span>${g.approved_entry_count}</span></div>
+        <div class="fg-card"><b>Approved Points</b><span>${g.approved_points_total || 0}</span></div>
         <div class="fg-card"><b>Pending Entries</b><span>${g.pending_entry_count}</span></div>
         <div class="fg-card"><b>Rejected Entries</b><span>${g.rejected_entry_count}</span></div>
         <div class="fg-card"><b>Entry Value</b><span>${money(g.entry_item_value)}</span></div>
@@ -208,7 +209,7 @@
 
       <div class="fg-card">
         <b>Pot Formula</b>
-        <span>Base ${money(g.base_payout)} + Approved Entries ${g.approved_entry_count} × ${money(g.entry_item_value)} = ${money(g.total_pool)}</span>
+        <span>Base ${money(g.base_payout)} + Approved Points ${g.approved_points_total || 0} × ${money(g.entry_item_value)} = ${money(g.total_pool)}</span>
       </div>
 
       ${g.winner_name ? `
@@ -233,7 +234,9 @@
   function renderEntry() {
     setTabClasses();
     const savedKey = localStorage.getItem(KEY_KEY) || "";
-    const entryStatus = state.entry_status ? statusPill(state.entry_status) : `<span class="fg-muted">Not entered</span>`;
+    const entryStatus = state.entry_status
+      ? `${statusPill(state.entry_status)} ${state.user_entry?.points_spent ? `<span class="fg-muted">• ${esc(state.user_entry.points_spent)} pts requested</span>` : ""}`
+      : `<span class="fg-muted">Not entered</span>`;
 
     $(".fg-body").innerHTML = `
       <div class="fg-card">
@@ -252,8 +255,15 @@
 
       <div class="fg-card">
         <b>Your Entry</b>
-        <p>${state.entered ? "You already submitted an entry request." : "You have not submitted an entry request yet."}</p>
-        <button class="fg-primary" id="fg-enter">${state.entered ? "Entry Submitted" : "Submit Entry Request"}</button>
+        <p>Select which draw you want to enter.</p>
+        <select class="fg-input" id="fg-entry-draw-select">
+          <option value="">Loading draws...</option>
+        </select>
+        <p id="fg-selected-entry-status" class="fg-muted"></p>
+        <label>Points to Use</label>
+        <input class="fg-input" id="fg-entry-points" type="number" min="1" value="1">
+        <p class="fg-muted">More points means more weight in that draw. Points are only deducted after admin approval.</p>
+        <button class="fg-primary" id="fg-enter">Submit Entry Request</button>
       </div>
     `;
 
@@ -271,9 +281,15 @@
       }
     });
 
+    loadEntryDraws();
+
     $("#fg-enter").addEventListener("click", async () => {
       try {
-        await api("/api/enter", { method: "POST", body: {} });
+        const drawId = Number($("#fg-entry-draw-select")?.value || 0);
+        if (!drawId) return alert("Pick an open draw first.");
+        const pointsSpent = Number($("#fg-entry-points")?.value || 0);
+        if (pointsSpent <= 0) return alert("Enter at least 1 point.");
+        await api("/api/enter", { method: "POST", body: { draw_id: drawId, points_spent: pointsSpent } });
         await refresh();
       } catch (e) {
         alert(e.message);
@@ -357,6 +373,26 @@
   }
 
 
+  async function loadEntryDraws() {
+    try {
+      const res = await api("/api/draws");
+      const sel = $("#fg-entry-draw-select");
+      if (!sel) return;
+
+      const draws = (res.draws || []).filter(d => d.status === "open");
+      sel.innerHTML = draws.length
+        ? draws.map(d => `<option value="${esc(d.id)}">#${esc(d.id)} • ${esc(d.title)} • ${esc(d.draw_type || "draw")} • Jackpot ${money(d.total_pool)}</option>`).join("")
+        : `<option value="">No open draws</option>`;
+
+      $("#fg-selected-entry-status").textContent = draws.length
+        ? "Entry requests are pending until admin approval."
+        : "No open draws are available right now.";
+    } catch (e) {
+      const sel = $("#fg-entry-draw-select");
+      if (sel) sel.innerHTML = `<option value="">Could not load draws</option>`;
+    }
+  }
+
   function renderAdmin() {
     if (!isAdmin()) {
       activeTab = "overview";
@@ -367,7 +403,7 @@
     const drawVal = state.draw_at ? new Date(state.draw_at * 1000).toISOString().slice(0, 16) : "";
     $(".fg-body").innerHTML = `
       <div class="fg-card private">
-        <b>Admin Pot Controls</b>
+        <b>Rolling Jackpot Controls</b>
         <label>Title</label>
         <input class="fg-input" id="fg-title" value="${esc(state.title || "Fries91's Giveaway")}">
 
@@ -383,9 +419,6 @@
         <label>Entry Item Value</label>
         <input class="fg-input" id="fg-entry-item-value" type="number" value="${esc(state.entry_item_value)}">
 
-        <label>Rollover Pool</label>
-        <input class="fg-input" id="fg-rollover" type="number" value="${esc(state.rollover_pool)}">
-
         <label>Draw Time</label>
         <input class="fg-input" id="fg-draw-at" type="datetime-local" value="${esc(drawVal)}">
 
@@ -393,7 +426,7 @@
           <div>Approved Entries: <b>${state.approved_entry_count}</b></div>
           <div>Pending Entries: <b>${state.pending_entry_count}</b></div>
           <div>Starting Jackpot: <b>${money(state.base_payout)}</b></div>
-          <div>Approved × Value: <b>${state.approved_entry_count} × ${money(state.entry_item_value)} = ${money(state.entry_growth_total)}</b></div>
+          <div>Approved Points × Value: <b>${state.approved_points_total || 0} × ${money(state.entry_item_value)} = ${money(state.entry_growth_total)}</b></div>
           <div>Rolling Jackpot: <b>${money(state.total_pool)}</b></div>
           <div>Player 60%: <b>${money(state.player_cut)}</b></div>
           <div>Rollover 20%: <b>${money(state.rollover_cut)}</b></div>
@@ -424,9 +457,15 @@
       </div>
 
       <div class="fg-card private">
-        <b>Admin Draw Manager</b>
-        <p class="fg-muted">Create more than one draw, load all draws, or delete a draw.</p>
-        <button class="fg-primary" id="fg-create-draw">Create New Draw From Settings Above</button>
+        <b>Other Events / Draws</b>
+        <p class="fg-muted">Create extra event draws separate from the rolling jackpot.</p>
+        <label>Event Title</label>
+        <input class="fg-input" id="fg-event-title" placeholder="Event draw title">
+        <label>Event Base Prize</label>
+        <input class="fg-input" id="fg-event-base" type="number" value="0">
+        <label>Event Entry Value</label>
+        <input class="fg-input" id="fg-event-entry-value" type="number" value="0">
+        <button class="fg-primary" id="fg-create-draw">Create Other Event Draw</button>
         <button class="fg-secondary" id="fg-load-draws">Load All Draws</button>
         <div id="fg-draws-list"></div>
       </div>
@@ -455,7 +494,7 @@
       base_payout: Number($("#fg-base-payout").value || 0),
       entry_item_name: $("#fg-entry-item-name").value.trim(),
       entry_item_value: Number($("#fg-entry-item-value").value || 0),
-      rollover_pool: Number($("#fg-rollover").value || 0),
+      rollover_pool: 0,
       draw_at
     };
   }
@@ -517,7 +556,7 @@
         ? res.entries.map(x => `
           <div class="fg-entry">
             <div><b>${esc(x.name)} [${esc(x.player_id)}]</b></div>
-            <div>${statusPill(x.status)}</div>
+            <div>${statusPill(x.status)} <span class="fg-muted">• ${esc(x.points_spent || 1)} pts</span></div>
             <div class="fg-entry-actions">
               <button data-approve="${x.id}" class="fg-mini good">Approve</button>
               <button data-reject="${x.id}" class="fg-mini badbtn">Reject</button>
@@ -572,11 +611,24 @@
 
   async function createDrawFromSettings() {
     try {
+      const title = $("#fg-event-title")?.value.trim() || "Other Event Draw";
+      const base = Number($("#fg-event-base")?.value || 0);
+      const entryValue = Number($("#fg-event-entry-value")?.value || 0);
+
       const res = await api("/api/admin/draws", {
         method: "POST",
-        body: { ...adminPayload(), status: "open" }
+        body: {
+          title,
+          prize_label: "Event Prize",
+          base_payout: base,
+          entry_item_name: "Free Points/Event",
+          entry_item_value: entryValue,
+          rollover_pool: 0,
+          status: "open",
+          draw_type: "event"
+        }
       });
-      alert("Created draw #" + res.draw_id);
+      alert("Created event draw #" + res.draw_id);
       await refresh();
       activeTab = "admin";
       render();
@@ -596,7 +648,7 @@
           <div class="fg-entry">
             <div><b>#${esc(d.id)} — ${esc(d.title)}</b></div>
             <div>${statusPill(d.status)}</div>
-            <div class="fg-muted">Jackpot: ${money(d.total_pool)} • Approved: ${esc(d.approved_entry_count || d.entry_count || 0)} • Pending: ${esc(d.pending_entry_count || 0)}</div>
+            <div class="fg-muted">Jackpot: ${money(d.total_pool)} • Approved: ${esc(d.approved_entry_count || d.entry_count || 0)} • Points: ${esc(d.approved_points_total || 0)} • Pending: ${esc(d.pending_entry_count || 0)}</div>
             <div class="fg-muted">Next Start: ${money(d.next_starting_jackpot || d.rollover_cut || 0)}</div>
             <div class="fg-entry-actions">
               <button data-draw-open="${d.id}" class="fg-mini good">Open</button>
