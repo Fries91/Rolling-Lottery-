@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.22
+// @version      1.0.23
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -99,6 +99,16 @@
     return !!(user && user.is_admin) || !!(state && state.is_admin);
   }
 
+  function updateTopbarJackpot() {
+    const el = $(".fg-top-marquee");
+    if (!el) return;
+    if (state && typeof state.total_pool !== "undefined") {
+      el.textContent = "Current Jackpot: " + money(state.total_pool);
+    } else {
+      el.textContent = "Current Jackpot loading...";
+    }
+  }
+
   function ensureButton() {
     if ($("#fries-giveaway-topbar")) return;
     const bar = document.createElement("button");
@@ -108,10 +118,12 @@
     bar.innerHTML = `
       <span class="fg-top-icon">🏆</span>
       <span class="fg-top-text">FRIES91'S GIVEAWAY</span>
-      <span class="fg-top-marquee">Rolling jackpot • Approval required</span>
+      <span class="fg-top-marquee">Current Jackpot loading...</span>
     `;
     bar.addEventListener("click", togglePanel);
     document.body.appendChild(bar);
+    updateTopbarJackpot();
+    silentTopbarRefresh();
   }
 
   function ensurePanel() {
@@ -144,6 +156,18 @@
     });
   }
 
+  async function silentTopbarRefresh() {
+    try {
+      if (state) return updateTopbarJackpot();
+      const res = await api("/api/state");
+      state = res.giveaway;
+      user = res.user || null;
+      updateTopbarJackpot();
+    } catch (e) {
+      // keep launcher quiet if backend is sleeping
+    }
+  }
+
   async function togglePanel() {
     ensurePanel();
     const panel = $("#fries-giveaway-panel");
@@ -172,6 +196,7 @@
       const res = await api("/api/state");
       state = res.giveaway;
       user = res.user || null;
+      updateTopbarJackpot();
       render();
     } catch (e) {
       renderError(e.message);
@@ -209,8 +234,9 @@
       <div class="fg-hero">
         <div class="fg-kicker">${esc(g.status).toUpperCase()}</div>
         <h2>${esc(g.title || "Fries91's Giveaway")}</h2>
-        <div class="fg-big">${money(g.player_cut)}</div>
-        <div class="fg-muted">Player payout</div>
+        <div class="fg-big">${money(g.total_pool)}</div>
+        <div class="fg-subline">Players Cut: ${money(g.player_cut)}</div>
+        <div class="fg-subline small">Next Pot: ${money(g.next_starting_jackpot || g.rollover_cut || 0)}</div>
       </div>
 
       <div id="fg-event-overview-boxes"></div>
@@ -218,6 +244,7 @@
     `;
     $("#fg-refresh").addEventListener("click", refresh);
     renderEventOverviewBoxes();
+    updateTopbarJackpot();
   }
 
   async function renderEventOverviewBoxes() {
@@ -913,6 +940,8 @@
     .fg-kicker { font-size:11px; letter-spacing:.1em; color:#d7c6ff; }
     .fg-hero h2 { margin: 8px 0; font-size: 22px; }
     .fg-big { font-size: 32px; font-weight: 900; }
+    .fg-subline { margin-top:6px; font-size:16px; font-weight:800; color:#f4f2ff; }
+    .fg-subline.small { font-size:13px; color:#c8c0dc; }
     .fg-grid { display:grid; grid-template-columns:1fr 1fr; gap: 10px; }
     .fg-card { background:#191c28; border:1px solid rgba(255,255,255,.12); border-radius:16px; padding:12px; margin-bottom:10px; }
     .fg-card b { display:block; margin-bottom:6px; }
