@@ -254,12 +254,65 @@ def ensure_point_requests(conn):
     """)
 
 
+def ensure_point_conversion_items(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS point_conversion_items (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            base_value INTEGER NOT NULL DEFAULT 850000,
+            item1_name TEXT NOT NULL DEFAULT 'Xanax',
+            item1_value INTEGER NOT NULL DEFAULT 850000,
+            item2_name TEXT NOT NULL DEFAULT '',
+            item2_value INTEGER NOT NULL DEFAULT 0,
+            item3_name TEXT NOT NULL DEFAULT '',
+            item3_value INTEGER NOT NULL DEFAULT 0,
+            item4_name TEXT NOT NULL DEFAULT '',
+            item4_value INTEGER NOT NULL DEFAULT 0,
+            item5_name TEXT NOT NULL DEFAULT '',
+            item5_value INTEGER NOT NULL DEFAULT 0,
+            updated_by INTEGER,
+            updated_at INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    t = now_ts()
+    conn.execute("""
+        INSERT OR IGNORE INTO point_conversion_items
+        (id, base_value, item1_name, item1_value, updated_at)
+        VALUES (1, 850000, 'Xanax', 850000, ?)
+    """, (t,))
+
+
+def point_conversion_payload(conn):
+    ensure_point_conversion_items(conn)
+    row = conn.execute("SELECT * FROM point_conversion_items WHERE id=1").fetchone()
+    base_value = max(1, int(row["base_value"] or 850000))
+    items = []
+    for i in range(1, 6):
+        name = (row[f"item{i}_name"] or "").strip()
+        value = int(row[f"item{i}_value"] or 0)
+        if name and value > 0:
+            items.append({
+                "slot": i,
+                "name": name,
+                "value": value,
+                "points": value // base_value
+            })
+    return {
+        "base_value": base_value,
+        "items": items,
+        "updated_by": row["updated_by"],
+        "updated_at": row["updated_at"],
+    }
+
+
 def init_db():
     with db() as conn:
         ensure_users(conn)
         ensure_sessions(conn)
         ensure_giveaways(conn)
         ensure_entries(conn)
+        ensure_points(conn)
+        ensure_point_requests(conn)
+        ensure_point_conversion_items(conn)
 
         if "player_id" in cols(conn, "sessions") and "player_id" in cols(conn, "users"):
             conn.execute("DELETE FROM sessions WHERE player_id NOT IN (SELECT player_id FROM users)")
@@ -814,6 +867,13 @@ def admin_status(s):
     return jsonify({"ok": True})
 
 
+@app.get("/api/point-conversions")
+def api_point_conversions():
+    with db() as conn:
+        payload = point_conversion_payload(conn)
+    return jsonify({"ok": True, "conversion": payload})
+
+
 @app.get("/api/points")
 @login_required
 def api_points(s):
@@ -831,12 +891,14 @@ def api_points(s):
             "SELECT id FROM point_claims WHERE player_id=? AND claim_date=?",
             (s["player_id"], today_key())
         ).fetchone())
+        conversion = point_conversion_payload(conn)
 
     return jsonify({
         "ok": True,
         "points": bal,
         "claimed_today": claimed_today,
         "daily_claim_amount": 1,
+        "conversion": conversion,
         "ledger": [dict(r) for r in ledger]
     })
 
@@ -860,6 +922,53 @@ def api_claim_daily(s):
         new_balance = add_points(conn, int(s["player_id"]), s["name"], 1, "daily free claim", None)
 
     return jsonify({"ok": True, "balance": new_balance})
+
+
+@app.get("/api/admin/point-conversions")
+@admin_required
+def admin_get_point_conversions(s):
+    with db() as conn:
+        payload = point_conversion_payload(conn)
+    return jsonify({"ok": True, "conversion": payload})
+
+
+@app.post("/api/admin/point-conversions")
+@admin_required
+def admin_save_point_conversions(s):
+    data = request.get_json(force=True, silent=True) or {}
+    base_value = max(1, int(data.get("base_value") or 850000))
+    raw_items = data.get("items") or []
+    cleaned = []
+    for item in raw_items[:5]:
+        name = (item.get("name") or "").strip()[:80]
+        value = max(0, int(item.get("value") or 0))
+        cleaned.append({"name": name, "value": value})
+    while len(cleaned) < 5:
+        cleaned.append({"name": "", "value": 0})
+
+    with db() as conn:
+        ensure_point_conversion_items(conn)
+        conn.execute("""
+            UPDATE point_conversion_items
+            SET base_value=?,
+                item1_name=?, item1_value=?,
+                item2_name=?, item2_value=?,
+                item3_name=?, item3_value=?,
+                item4_name=?, item4_value=?,
+                item5_name=?, item5_value=?,
+                updated_by=?, updated_at=?
+            WHERE id=1
+        """, (
+            base_value,
+            cleaned[0]["name"], cleaned[0]["value"],
+            cleaned[1]["name"], cleaned[1]["value"],
+            cleaned[2]["name"], cleaned[2]["value"],
+            cleaned[3]["name"], cleaned[3]["value"],
+            cleaned[4]["name"], cleaned[4]["value"],
+            int(s["player_id"]), now_ts(),
+        ))
+        payload = point_conversion_payload(conn)
+    return jsonify({"ok": True, "conversion": payload})
 
 
 @app.get("/api/admin/points")
