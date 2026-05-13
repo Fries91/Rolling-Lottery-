@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.19
+// @version      1.0.20
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -492,16 +492,33 @@
       </div>
 
       <div class="fg-card private">
-        <b>Admin Point Controls</b>
+        <b>Add Points</b>
         <label>Player ID</label>
-        <input class="fg-input" id="fg-points-player-id" type="number" placeholder="Torn player ID">
+        <input class="fg-input" id="fg-add-points-player-id" type="number" placeholder="Torn player ID">
         <label>Player Name</label>
-        <input class="fg-input" id="fg-points-player-name" placeholder="Optional name">
-        <label>Points Amount</label>
-        <input class="fg-input" id="fg-points-amount" type="number" placeholder="Use positive to add, negative to remove">
+        <input class="fg-input" id="fg-add-points-player-name" placeholder="Optional name">
+        <label>Points to Add</label>
+        <input class="fg-input" id="fg-add-points-amount" type="number" min="1" placeholder="Example: 10">
         <label>Reason</label>
-        <input class="fg-input" id="fg-points-reason" value="admin free points">
-        <button class="fg-primary" id="fg-points-save">Apply Points</button>
+        <input class="fg-input" id="fg-add-points-reason" value="admin free points">
+        <button class="fg-primary" id="fg-add-points-save">Add Points</button>
+      </div>
+
+      <div class="fg-card private">
+        <b>Remove Points</b>
+        <label>Player ID</label>
+        <input class="fg-input" id="fg-remove-points-player-id" type="number" placeholder="Torn player ID">
+        <label>Player Name</label>
+        <input class="fg-input" id="fg-remove-points-player-name" placeholder="Optional name">
+        <label>Points to Remove</label>
+        <input class="fg-input" id="fg-remove-points-amount" type="number" min="1" placeholder="Example: 5">
+        <label>Reason</label>
+        <input class="fg-input" id="fg-remove-points-reason" value="admin removed points">
+        <button class="fg-warn" id="fg-remove-points-save">Remove Points</button>
+      </div>
+
+      <div class="fg-card private">
+        <b>Point Balances</b>
         <button class="fg-secondary" id="fg-points-load">Load Balances</button>
         <div id="fg-points-balances"></div>
       </div>
@@ -536,7 +553,8 @@
     $("#fg-roll").addEventListener("click", rollAdmin);
     $("#fg-draw").addEventListener("click", drawAdmin);
     $("#fg-load-entries").addEventListener("click", loadEntries);
-    $("#fg-points-save")?.addEventListener("click", adminAdjustPoints);
+    $("#fg-add-points-save")?.addEventListener("click", adminAddPoints);
+    $("#fg-remove-points-save")?.addEventListener("click", adminRemovePoints);
     $("#fg-points-load")?.addEventListener("click", adminLoadPoints);
     $("#fg-create-draw")?.addEventListener("click", createDrawFromSettings);
     $("#fg-load-draws")?.addEventListener("click", loadDraws);
@@ -633,22 +651,44 @@
     }
   }
 
-  async function adminAdjustPoints() {
+  async function adminAddPoints() {
     try {
-      const playerId = Number($("#fg-points-player-id").value || 0);
-      const name = $("#fg-points-player-name").value.trim();
-      const amount = Number($("#fg-points-amount").value || 0);
-      const reason = $("#fg-points-reason").value.trim() || "admin free points";
+      const playerId = Number($("#fg-add-points-player-id").value || 0);
+      const name = $("#fg-add-points-player-name").value.trim();
+      const amount = Number($("#fg-add-points-amount").value || 0);
+      const reason = $("#fg-add-points-reason").value.trim() || "admin free points";
 
       if (!playerId) return alert("Enter a player ID.");
-      if (!amount) return alert("Enter a point amount.");
+      if (!amount || amount <= 0) return alert("Enter a positive point amount.");
 
       const res = await api("/api/admin/points", {
         method: "POST",
         body: { player_id: playerId, name, amount, reason }
       });
 
-      alert("New balance: " + res.balance + " pts");
+      alert("Added points. New balance: " + res.balance + " pts");
+      await adminLoadPoints();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  async function adminRemovePoints() {
+    try {
+      const playerId = Number($("#fg-remove-points-player-id").value || 0);
+      const name = $("#fg-remove-points-player-name").value.trim();
+      const amount = Number($("#fg-remove-points-amount").value || 0);
+      const reason = $("#fg-remove-points-reason").value.trim() || "admin removed points";
+
+      if (!playerId) return alert("Enter a player ID.");
+      if (!amount || amount <= 0) return alert("Enter a positive point amount.");
+
+      const res = await api("/api/admin/points", {
+        method: "POST",
+        body: { player_id: playerId, name, amount: -Math.abs(amount), reason }
+      });
+
+      alert("Removed points. New balance: " + res.balance + " pts");
       await adminLoadPoints();
     } catch (e) {
       alert(e.message);
