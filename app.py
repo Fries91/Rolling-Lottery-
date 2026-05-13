@@ -146,6 +146,8 @@ def ensure_giveaways(conn):
         ("created_by", "created_by INTEGER"),
         ("created_at", "created_at INTEGER NOT NULL DEFAULT 0"),
         ("updated_at", "updated_at INTEGER NOT NULL DEFAULT 0"),
+        ("created_ts", "created_ts INTEGER NOT NULL DEFAULT 0"),
+        ("updated_ts", "updated_ts INTEGER NOT NULL DEFAULT 0"),
         ("deleted_at", "deleted_at INTEGER"),
         ("draw_type", "draw_type TEXT NOT NULL DEFAULT 'rolling'"),
         ("event_prize", "event_prize TEXT"),
@@ -155,6 +157,19 @@ def ensure_giveaways(conn):
         ("auto_drawn_at", "auto_drawn_at INTEGER"),
     ]:
         add_col(conn, "giveaways", col, sql)
+
+
+def giveaway_legacy_insert_columns(conn):
+    extra_cols = []
+    extra_vals = []
+    c = cols(conn, "giveaways")
+    if "created_ts" in c:
+        extra_cols.append("created_ts")
+        extra_vals.append(now_ts())
+    if "updated_ts" in c:
+        extra_cols.append("updated_ts")
+        extra_vals.append(now_ts())
+    return extra_cols, extra_vals
 
 
 def ensure_entries(conn):
@@ -239,6 +254,10 @@ def init_db():
         """, ("Fries91's Giveaway",))
         conn.execute("UPDATE giveaways SET created_at=? WHERE created_at IS NULL OR created_at=0", (t,))
         conn.execute("UPDATE giveaways SET updated_at=? WHERE updated_at IS NULL OR updated_at=0", (t,))
+        if "created_ts" in cols(conn, "giveaways"):
+            conn.execute("UPDATE giveaways SET created_ts=? WHERE created_ts IS NULL OR created_ts=0", (t,))
+        if "updated_ts" in cols(conn, "giveaways"):
+            conn.execute("UPDATE giveaways SET updated_ts=? WHERE updated_ts IS NULL OR updated_ts=0", (t,))
         conn.execute("UPDATE giveaways SET draw_type='rolling' WHERE draw_type IS NULL OR draw_type=''")
 
         if not conn.execute("SELECT id FROM giveaways ORDER BY id DESC LIMIT 1").fetchone():
@@ -713,22 +732,37 @@ def admin_roll(s):
         current_payload = clean_giveaway(conn, current, True)
         next_base_payout = int(current_payload.get("rollover_cut") or 0)
 
-        conn.execute("""
-            INSERT INTO giveaways
-            (title, prize_label, total_pool, base_payout, entry_item_name, entry_item_value,
-             player_percent, rollover_percent, reserve_percent, rollover_pool, status, draw_at,
-             created_by, created_at, updated_at)
-            VALUES (?, ?, 0, ?, ?, ?, 60, 20, 20, 0, 'open', NULL, ?, ?, ?)
-        """, (
+        columns = [
+            "title", "prize_label", "total_pool", "base_payout", "entry_item_name", "entry_item_value",
+            "player_percent", "rollover_percent", "reserve_percent", "rollover_pool", "status", "draw_at",
+            "created_by", "created_at", "updated_at", "draw_type"
+        ]
+        values = [
             (data.get("title") or current["title"] or "Fries91's Giveaway").strip(),
             (data.get("prize_label") or current["prize_label"] or "Faction/Event Prize").strip(),
+            0,
             next_base_payout,
             (data.get("entry_item_name") or current["entry_item_name"] or "Xanax").strip(),
             int(data.get("entry_item_value") or current["entry_item_value"] or 0),
+            60,
+            20,
+            20,
+            0,
+            "open",
+            None,
             s["player_id"],
             t,
             t,
-        ))
+            "rolling",
+        ]
+
+        extra_cols, extra_vals = giveaway_legacy_insert_columns(conn)
+        columns.extend(extra_cols)
+        values.extend(extra_vals)
+
+        placeholders = ",".join(["?"] * len(columns))
+        col_sql = ",".join(columns)
+        conn.execute(f"INSERT INTO giveaways ({col_sql}) VALUES ({placeholders})", values)
 
     return jsonify({"ok": True, "next_base_payout": next_base_payout})
 
@@ -920,19 +954,23 @@ def admin_create_draw(s):
 
     with db() as conn:
         ensure_giveaways(conn)
-        conn.execute("""
-            INSERT INTO giveaways
-            (title, prize_label, total_pool, base_payout, entry_item_name, entry_item_value,
-             player_percent, rollover_percent, reserve_percent, rollover_pool, status, draw_at,
-             created_by, created_at, updated_at, draw_type, event_prize, point_cost,
-             start_at, end_at, auto_drawn_at)
-            VALUES (?, ?, 0, ?, ?, ?, 60, 20, 20, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-        """, (
+
+        columns = [
+            "title", "prize_label", "total_pool", "base_payout", "entry_item_name", "entry_item_value",
+            "player_percent", "rollover_percent", "reserve_percent", "rollover_pool", "status", "draw_at",
+            "created_by", "created_at", "updated_at", "draw_type", "event_prize", "point_cost",
+            "start_at", "end_at", "auto_drawn_at"
+        ]
+        values = [
             (data.get("title") or "Other Event Draw").strip(),
             (data.get("prize_label") or data.get("event_prize") or "Event Prize").strip(),
+            0,
             int(data.get("base_payout") or 0),
             (data.get("entry_item_name") or "Free Points/Event").strip(),
             int(data.get("entry_item_value") or 0),
+            60,
+            20,
+            20,
             int(data.get("rollover_pool") or 0),
             (data.get("status") or "open").strip().lower(),
             int(data["draw_at"]) if str(data.get("draw_at") or "").isdigit() else end_at,
@@ -944,7 +982,17 @@ def admin_create_draw(s):
             int(data.get("point_cost") or 1),
             start_at,
             end_at,
-        ))
+            None,
+        ]
+
+        extra_cols, extra_vals = giveaway_legacy_insert_columns(conn)
+        columns.extend(extra_cols)
+        values.extend(extra_vals)
+
+        placeholders = ",".join(["?"] * len(columns))
+        col_sql = ",".join(columns)
+        conn.execute(f"INSERT INTO giveaways ({col_sql}) VALUES ({placeholders})", values)
+
         new_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
 
     return jsonify({"ok": True, "draw_id": int(new_id)})
