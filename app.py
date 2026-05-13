@@ -1140,7 +1140,6 @@ def admin_clear_draw(s):
 
     with db() as conn:
         ensure_giveaways(conn)
-        ensure_points(conn)
         row = conn.execute(
             "SELECT id, draw_type FROM giveaways WHERE id=? AND deleted_at IS NULL",
             (draw_id,)
@@ -1152,15 +1151,8 @@ def admin_clear_draw(s):
         if row["draw_type"] == "rolling":
             return jsonify({"ok": False, "error": "Use rolling jackpot controls for the rolling draw"}), 400
 
-        # refund entries before clearing
-        entries = conn.execute("""
-            SELECT player_id, name, points_spent, status
-            FROM entries
-            WHERE giveaway_id=? AND status!='rejected'
-        """, (draw_id,)).fetchall()
-        for erow in entries:
-            add_points(conn, int(erow["player_id"]), erow["name"], int(erow["points_spent"] or 1), "event cleared/refunded", int(s["player_id"]))
-
+        # Points are NOT refunded when admin clears/closes an event.
+        # Clear only removes the event entries/winner view and closes the event.
         conn.execute("DELETE FROM entries WHERE giveaway_id=?", (draw_id,))
         conn.execute("""
             UPDATE giveaways
@@ -1231,6 +1223,97 @@ def admin_draw_status(s):
         )
 
     return jsonify({"ok": True})
+
+
+@app.get("/api/admin/stats")
+@admin_required
+def admin_stats(s):
+    with db() as conn:
+        ensure_users(conn)
+        ensure_points(conn)
+        ensure_giveaways(conn)
+        ensure_entries(conn)
+        ensure_point_requests(conn)
+
+        script_users = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
+
+        total_point_requests = conn.execute(
+            "SELECT COUNT(*) AS c FROM point_requests"
+        ).fetchone()["c"]
+
+        pending_point_requests = conn.execute(
+            "SELECT COUNT(*) AS c FROM point_requests WHERE status='pending'"
+        ).fetchone()["c"]
+
+        approved_point_requests = conn.execute(
+            "SELECT COUNT(*) AS c FROM point_requests WHERE status='approved'"
+        ).fetchone()["c"]
+
+        rejected_point_requests = conn.execute(
+            "SELECT COUNT(*) AS c FROM point_requests WHERE status='rejected'"
+        ).fetchone()["c"]
+
+        total_requested_points = conn.execute(
+            "SELECT COALESCE(SUM(amount),0) AS s FROM point_requests"
+        ).fetchone()["s"]
+
+        pending_requested_points = conn.execute(
+            "SELECT COALESCE(SUM(amount),0) AS s FROM point_requests WHERE status='pending'"
+        ).fetchone()["s"]
+
+        approved_requested_points = conn.execute(
+            "SELECT COALESCE(SUM(amount),0) AS s FROM point_requests WHERE status='approved'"
+        ).fetchone()["s"]
+
+        event_rows = conn.execute("""
+            SELECT
+                g.id,
+                g.title,
+                g.status,
+                g.event_prize,
+                g.prize_label,
+                COUNT(e.id) AS entrant_count,
+                COALESCE(SUM(e.points_spent), 0) AS points_used
+            FROM giveaways g
+            LEFT JOIN entries e ON e.giveaway_id = g.id
+            WHERE g.deleted_at IS NULL
+              AND g.draw_type = 'event'
+            GROUP BY g.id
+            ORDER BY g.id DESC
+            LIMIT 25
+        """).fetchall()
+
+        rolling_rows = conn.execute("""
+            SELECT
+                g.id,
+                g.title,
+                g.status,
+                COUNT(e.id) AS entrant_count,
+                COALESCE(SUM(e.points_spent), 0) AS points_used
+            FROM giveaways g
+            LEFT JOIN entries e ON e.giveaway_id = g.id
+            WHERE g.deleted_at IS NULL
+              AND g.draw_type = 'rolling'
+            GROUP BY g.id
+            ORDER BY g.id DESC
+            LIMIT 5
+        """).fetchall()
+
+    return jsonify({
+        "ok": True,
+        "script_users": int(script_users or 0),
+        "point_requests": {
+            "total_count": int(total_point_requests or 0),
+            "pending_count": int(pending_point_requests or 0),
+            "approved_count": int(approved_point_requests or 0),
+            "rejected_count": int(rejected_point_requests or 0),
+            "total_points": int(total_requested_points or 0),
+            "pending_points": int(pending_requested_points or 0),
+            "approved_points": int(approved_requested_points or 0),
+        },
+        "events": [dict(r) for r in event_rows],
+        "rolling": [dict(r) for r in rolling_rows],
+    })
 
 
 @app.get("/api/admin/winner-notifications")
