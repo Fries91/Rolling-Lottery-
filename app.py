@@ -413,6 +413,7 @@ def clean_giveaway(conn, g, private=False):
         "rolling_jackpot": computed_pool,
         "entry_is_free": True,
         "approval_required": True,
+        "is_active_for_overview": (g["status"] == "open" and (not ("end_at" in g.keys()) or not g["end_at"] or int(g["end_at"]) > now_ts()) and not g["winner_name"]),
     }
     if private:
         out["reserve_percent"] = ap
@@ -1043,6 +1044,63 @@ def admin_create_draw(s):
         new_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
 
     return jsonify({"ok": True, "draw_id": int(new_id)})
+
+@app.post("/api/admin/draws/update")
+@admin_required
+def admin_update_draw(s):
+    data = request.get_json(force=True, silent=True) or {}
+    draw_id = int(data.get("draw_id") or 0)
+
+    if not draw_id:
+        return jsonify({"ok": False, "error": "Missing draw id"}), 400
+
+    start_at = int(data["start_at"]) if str(data.get("start_at") or "").isdigit() else None
+    end_at = int(data["end_at"]) if str(data.get("end_at") or "").isdigit() else None
+    max_entries_per_player = int(data.get("max_entries_per_player") or 1)
+    if max_entries_per_player < 1:
+        max_entries_per_player = 1
+
+    if start_at and end_at and end_at <= start_at:
+        return jsonify({"ok": False, "error": "End time must be after start time"}), 400
+
+    with db() as conn:
+        ensure_giveaways(conn)
+        row = conn.execute(
+            "SELECT id, draw_type FROM giveaways WHERE id=? AND deleted_at IS NULL",
+            (draw_id,)
+        ).fetchone()
+
+        if not row:
+            return jsonify({"ok": False, "error": "Draw not found"}), 404
+        if row["draw_type"] != "event":
+            return jsonify({"ok": False, "error": "Only event draws can be updated here"}), 400
+
+        conn.execute("""
+            UPDATE giveaways
+            SET title=?,
+                prize_label=?,
+                event_prize=?,
+                point_cost=?,
+                start_at=?,
+                end_at=?,
+                draw_at=?,
+                max_entries_per_player=?,
+                updated_at=?
+            WHERE id=?
+        """, (
+            (data.get("title") or "Other Event Draw").strip(),
+            (data.get("prize_label") or data.get("event_prize") or "Event Prize").strip(),
+            (data.get("event_prize") or data.get("prize_label") or "Event Prize").strip(),
+            int(data.get("point_cost") or 1),
+            start_at,
+            end_at,
+            int(data["draw_at"]) if str(data.get("draw_at") or "").isdigit() else end_at,
+            max_entries_per_player,
+            now_ts(),
+            draw_id,
+        ))
+
+    return jsonify({"ok": True})
 
 @app.post("/api/admin/draws/delete")
 @admin_required
