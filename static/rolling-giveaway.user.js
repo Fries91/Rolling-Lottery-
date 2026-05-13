@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.10
+// @version      1.0.12
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -91,7 +91,7 @@
     bar.innerHTML = `
       <span class="fg-top-icon">🏆</span>
       <span class="fg-top-text">FRIES91'S GIVEAWAY</span>
-      <span class="fg-top-marquee">Free rolling giveaway • Approval required</span>
+      <span class="fg-top-marquee">Rolling jackpot • Approval required</span>
     `;
     bar.addEventListener("click", togglePanel);
     document.body.appendChild(bar);
@@ -105,13 +105,14 @@
       <div class="fg-head">
         <div>
           <div class="fg-title">🎁 Fries91's Giveaway</div>
-          <div class="fg-sub">Free entry • Admin approval required</div>
+          <div class="fg-sub">Rolling jackpot • Admin approval required</div>
         </div>
         <button class="fg-close">×</button>
       </div>
       <div class="fg-tabs">
         <button data-tab="overview">Overview</button>
         <button data-tab="entry">Entry</button>
+        <button data-tab="points">Points</button>
         <button data-tab="admin" class="fg-admin-tab">Admin</button>
       </div>
       <div class="fg-body"></div>
@@ -179,6 +180,7 @@
     setTabClasses();
     if (activeTab === "overview") return renderOverview();
     if (activeTab === "entry") return renderEntry();
+    if (activeTab === "points") return renderPoints();
     if (activeTab === "admin" && isAdmin()) return renderAdmin();
     return renderOverview();
   }
@@ -191,7 +193,7 @@
         <div class="fg-kicker">${esc(g.status).toUpperCase()}</div>
         <h2>${esc(g.title || "Fries91's Giveaway")}</h2>
         <div class="fg-big">${money(g.total_pool)}</div>
-        <div class="fg-muted">Current pot • Approved entries only</div>
+        <div class="fg-muted">Rolling jackpot • Approved entries only</div>
       </div>
 
       <div class="fg-grid">
@@ -201,6 +203,7 @@
         <div class="fg-card"><b>Rejected Entries</b><span>${g.rejected_entry_count}</span></div>
         <div class="fg-card"><b>Entry Value</b><span>${money(g.entry_item_value)}</span></div>
         <div class="fg-card"><b>Rollover 20%</b><span>${money(g.rollover_cut)}</span></div>
+        <div class="fg-card"><b>Next Start</b><span>${money(g.next_starting_jackpot || g.rollover_cut)}</span></div>
       </div>
 
       <div class="fg-card">
@@ -278,6 +281,82 @@
     });
   }
 
+  async function renderPoints() {
+    setTabClasses();
+
+    if (!user) {
+      const savedKey = localStorage.getItem(KEY_KEY) || "";
+      $(".fg-body").innerHTML = `
+        <div class="fg-card">
+          <b>Points Login</b>
+          <p>Login first to view your free points balance.</p>
+          <input class="fg-input" id="fg-points-api-key" placeholder="Paste Torn API key" value="${esc(savedKey)}">
+          <button class="fg-primary" id="fg-points-login">Login / Save Key</button>
+        </div>
+      `;
+      $("#fg-points-login").addEventListener("click", async () => {
+        const key = $("#fg-points-api-key").value.trim();
+        localStorage.setItem(KEY_KEY, key);
+        try {
+          const res = await api("/api/login", { method: "POST", body: { api_key: key } });
+          localStorage.setItem(LS_KEY, res.token);
+          await refresh();
+          activeTab = "points";
+          render();
+        } catch (e) {
+          alert(e.message);
+        }
+      });
+      return;
+    }
+
+    $(".fg-body").innerHTML = `<div class="fg-card"><b>Loading Points...</b><span>Checking your free point balance.</span></div>`;
+
+    try {
+      const res = await api("/api/points");
+      const p = res.points || {};
+      $(".fg-body").innerHTML = `
+        <div class="fg-hero">
+          <div class="fg-kicker">FREE POINTS</div>
+          <h2>${esc(user.name)} [${esc(user.player_id)}]</h2>
+          <div class="fg-big">${Number(p.balance || 0).toLocaleString()} pts</div>
+          <div class="fg-muted">Points are free credits. They cannot be bought, sold, traded, or exchanged.</div>
+        </div>
+
+        <div class="fg-card">
+          <b>Daily Free Claim</b>
+          <p>${res.claimed_today ? "You already claimed today's free point." : "Claim 1 free point today."}</p>
+          <button class="fg-primary" id="fg-claim-daily" ${res.claimed_today ? "disabled" : ""}>${res.claimed_today ? "Claimed Today" : "Claim 1 Free Point"}</button>
+        </div>
+
+        <div class="fg-card">
+          <b>Point History</b>
+          <div id="fg-point-history">
+            ${
+              (res.ledger || []).length
+                ? res.ledger.map(x => `<div class="fg-entry"><b>${Number(x.delta) > 0 ? "+" : ""}${esc(x.delta)} pts</b><br><span>${esc(x.reason)}</span></div>`).join("")
+                : `<div class="fg-muted">No point history yet.</div>`
+            }
+          </div>
+        </div>
+      `;
+
+      $("#fg-claim-daily")?.addEventListener("click", async () => {
+        try {
+          await api("/api/points/claim-daily", { method: "POST", body: {} });
+          await refresh();
+          activeTab = "points";
+          render();
+        } catch (e) {
+          alert(e.message);
+        }
+      });
+    } catch (e) {
+      renderError(e.message);
+    }
+  }
+
+
   function renderAdmin() {
     if (!isAdmin()) {
       activeTab = "overview";
@@ -295,7 +374,7 @@
         <label>Prize Label</label>
         <input class="fg-input" id="fg-prize-label" value="${esc(state.prize_label)}">
 
-        <label>Starting Payout / Base Pot</label>
+        <label>Starting Jackpot</label>
         <input class="fg-input" id="fg-base-payout" type="number" value="${esc(state.base_payout)}">
 
         <label>Entry Item Name</label>
@@ -313,11 +392,12 @@
         <div class="fg-split">
           <div>Approved Entries: <b>${state.approved_entry_count}</b></div>
           <div>Pending Entries: <b>${state.pending_entry_count}</b></div>
-          <div>Base Payout: <b>${money(state.base_payout)}</b></div>
+          <div>Starting Jackpot: <b>${money(state.base_payout)}</b></div>
           <div>Approved × Value: <b>${state.approved_entry_count} × ${money(state.entry_item_value)} = ${money(state.entry_growth_total)}</b></div>
-          <div>Total Pot: <b>${money(state.total_pool)}</b></div>
+          <div>Rolling Jackpot: <b>${money(state.total_pool)}</b></div>
           <div>Player 60%: <b>${money(state.player_cut)}</b></div>
           <div>Rollover 20%: <b>${money(state.rollover_cut)}</b></div>
+          <div>Next Starting Jackpot: <b>${money(state.next_starting_jackpot || state.rollover_cut)}</b></div>
           <div>Tier/Admin 20%: <b>${money(state.reserve_cut)}</b></div>
         </div>
 
@@ -325,7 +405,22 @@
         <button class="fg-secondary" id="fg-open">Open Giveaway</button>
         <button class="fg-secondary" id="fg-close-giveaway">Close Giveaway</button>
         <button class="fg-warn" id="fg-draw">Draw Winner</button>
-        <button class="fg-secondary" id="fg-roll">Start New Roll</button>
+        <button class="fg-secondary" id="fg-roll">Start Next Roll From Rollover</button>
+      </div>
+
+      <div class="fg-card private">
+        <b>Admin Point Controls</b>
+        <label>Player ID</label>
+        <input class="fg-input" id="fg-points-player-id" type="number" placeholder="Torn player ID">
+        <label>Player Name</label>
+        <input class="fg-input" id="fg-points-player-name" placeholder="Optional name">
+        <label>Points Amount</label>
+        <input class="fg-input" id="fg-points-amount" type="number" placeholder="Use positive to add, negative to remove">
+        <label>Reason</label>
+        <input class="fg-input" id="fg-points-reason" value="admin free points">
+        <button class="fg-primary" id="fg-points-save">Apply Points</button>
+        <button class="fg-secondary" id="fg-points-load">Load Balances</button>
+        <div id="fg-points-balances"></div>
       </div>
 
       <div class="fg-card">
@@ -389,7 +484,8 @@
 
   async function rollAdmin() {
     try {
-      await api("/api/admin/roll", { method: "POST", body: adminPayload() });
+      const res = await api("/api/admin/roll", { method: "POST", body: adminPayload() });
+      alert("Next roll started. New starting jackpot: " + money(res.next_base_payout || 0));
       await refresh();
     } catch (e) {
       alert(e.message);
@@ -431,6 +527,41 @@
     }
   }
 
+  async function adminAdjustPoints() {
+    try {
+      const playerId = Number($("#fg-points-player-id").value || 0);
+      const name = $("#fg-points-player-name").value.trim();
+      const amount = Number($("#fg-points-amount").value || 0);
+      const reason = $("#fg-points-reason").value.trim() || "admin free points";
+
+      if (!playerId) return alert("Enter a player ID.");
+      if (!amount) return alert("Enter a point amount.");
+
+      const res = await api("/api/admin/points", {
+        method: "POST",
+        body: { player_id: playerId, name, amount, reason }
+      });
+
+      alert("New balance: " + res.balance + " pts");
+      await adminLoadPoints();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  async function adminLoadPoints() {
+    try {
+      const res = await api("/api/admin/points");
+      const box = $("#fg-points-balances");
+      box.innerHTML = (res.balances || []).length
+        ? res.balances.map(x => `<div class="fg-entry"><b>${esc(x.name)} [${esc(x.player_id)}]</b><br><span>${esc(x.balance)} pts</span></div>`).join("")
+        : `<div class="fg-muted">No point balances yet.</div>`;
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+
   GM_addStyle(`
     #fries-giveaway-topbar {
       position: fixed; top: 0; left: 0; right: 0; z-index: 999998;
@@ -467,6 +598,7 @@
     .fg-input { width:100%; box-sizing:border-box; padding:10px; margin:7px 0 10px; border-radius:10px; border:1px solid rgba(255,255,255,.18); background:#0e1017; color:white; }
     .fg-primary, .fg-secondary, .fg-warn { width:100%; padding:10px; margin:5px 0; border-radius:12px; border:0; color:white; font-weight:800; cursor:pointer; }
     .fg-primary { background:#6b38b6; }
+    .fg-primary:disabled { opacity:.55; cursor:not-allowed; }
     .fg-secondary { background:#2f3447; }
     .fg-warn { background:#a15b13; }
     .fg-split { display:grid; gap:6px; background:#11131a; border-radius:12px; padding:10px; margin:10px 0; }
