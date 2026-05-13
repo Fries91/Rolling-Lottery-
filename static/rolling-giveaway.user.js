@@ -68,22 +68,39 @@
     return "$" + Number(n || 0).toLocaleString();
   }
 
-  function pointRowsHtml(conversion) {
-    const c = conversion || {};
-    const base = Math.max(1, Number(c.base_value || 820000));
-    const items = (c.items && c.items.length) ? c.items : [
+  function defaultPointItems(base = 820000) {
+    return [
       { name: "Donator Pack", value: 23500000, points: Math.floor(23500000 / base) },
       { name: "Feathery Hotel Coupon", value: 12000000, points: Math.floor(12000000 / base) },
       { name: "Drug Pack", value: 4000000, points: Math.floor(4000000 / base) },
       { name: "Erotic DVD", value: 3600000, points: Math.floor(3600000 / base) },
       { name: "Xanax", value: 820000, points: Math.floor(820000 / base) },
     ];
+  }
+
+  function normalizePointConversion(conversion) {
+    const c = conversion || {};
+    const base = Math.max(1, Number(c.base_value || 820000));
+    const items = (c.items && c.items.length ? c.items : defaultPointItems(base)).map((item, idx) => {
+      const value = Math.max(0, Number(item.value || 0));
+      return {
+        slot: Number(item.slot || idx + 1),
+        name: item.name || `Item ${idx + 1}`,
+        value,
+        points: Math.floor(value / base)
+      };
+    });
+    return { base_value: base, items };
+  }
+
+  function pointRowsHtml(conversion) {
+    const c = normalizePointConversion(conversion);
     return `
-      <div class="fg-muted">1 point = ${money(base)} value. Item values are rounded down.</div>
+      <div class="fg-muted">1 point = ${money(c.base_value)} value. Item values are rounded down.</div>
       <table class="fg-point-table">
         <thead><tr><th>Item</th><th>Value</th><th>Points</th></tr></thead>
         <tbody>
-          ${items.map(item => `
+          ${c.items.map(item => `
             <tr>
               <td>${esc(item.name)}</td>
               <td>${money(item.value)}</td>
@@ -93,6 +110,42 @@
         </tbody>
       </table>
     `;
+  }
+
+  function pointRequestSelectOptions(conversion) {
+    const c = normalizePointConversion(conversion);
+    return c.items.map(item => `
+      <option value="${esc(item.slot)}" data-name="${esc(item.name)}" data-value="${esc(item.value)}" data-base="${esc(c.base_value)}">
+        ${esc(item.name)} — ${money(item.value)} = ${Number(item.points || 0).toLocaleString()} pts each
+      </option>
+    `).join("");
+  }
+
+  function updatePointRequestPreview() {
+    const sel = $("#fg-request-points-item");
+    const qtyInput = $("#fg-request-points-qty");
+    const preview = $("#fg-request-points-preview");
+    if (!sel || !qtyInput || !preview) return { points: 0, itemName: "", qty: 0, itemValue: 0, totalValue: 0, baseValue: 820000 };
+
+    const opt = sel.selectedOptions && sel.selectedOptions[0];
+    const itemName = opt?.dataset?.name || opt?.textContent?.trim() || "Item";
+    const itemValue = Math.max(0, Number(opt?.dataset?.value || 0));
+    const baseValue = Math.max(1, Number(opt?.dataset?.base || 820000));
+    const qty = Math.max(0, Math.floor(Number(qtyInput.value || 0)));
+    if (qtyInput.value && String(qtyInput.value) !== String(qty)) qtyInput.value = qty || "";
+
+    const totalValue = itemValue * qty;
+    const points = Math.floor(totalValue / baseValue);
+    preview.innerHTML = qty > 0
+      ? `
+        <div class="fg-request-preview-line"><b>${esc(qty)} × ${esc(itemName)}</b></div>
+        <div>Total value: <b>${money(totalValue)}</b></div>
+        <div>Points request: <b>${Number(points).toLocaleString()} pts</b></div>
+        <div class="fg-muted">Formula: ${money(totalValue)} ÷ ${money(baseValue)}, rounded down.</div>
+      `
+      : `<div class="fg-muted">Choose an item and quantity to preview the points before sending.</div>`;
+
+    return { points, itemName, qty, itemValue, totalValue, baseValue };
   }
 
   function drawDate(ts) {
@@ -434,12 +487,17 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
         </div>
 
         <div class="fg-card">
-          <b>Request Points</b>
-          <p class="fg-muted">Ask admin for free points. Admin approval is required before points are added.</p>
-          <label>Amount Requested</label>
-          <input class="fg-input" id="fg-request-points-amount" type="number" min="1" placeholder="Example: 10">
-          <label>Reason</label>
-          <input class="fg-input" id="fg-request-points-reason" placeholder="Example: event participation">
+          <b>Request Points From Items</b>
+          <p class="fg-muted">Choose the item you are giving/admin is counting, enter how many, and the app will convert it to points before sending the request.</p>
+          <label>Item</label>
+          <select class="fg-input" id="fg-request-points-item">
+            ${pointRequestSelectOptions(res.conversion)}
+          </select>
+          <label>How Many</label>
+          <input class="fg-input" id="fg-request-points-qty" type="number" min="1" step="1" value="1" placeholder="Example: 3">
+          <div id="fg-request-points-preview" class="fg-mini-preview"></div>
+          <label>Extra Note For Admin</label>
+          <input class="fg-input" id="fg-request-points-reason" placeholder="Optional note, example: sent items / trade pending">
           <button class="fg-primary" id="fg-request-points-submit">Send Point Request</button>
           <button class="fg-secondary" id="fg-load-my-point-requests">My Requests</button>
           <div id="fg-my-point-requests"></div>
@@ -468,6 +526,9 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
         }
       });
 
+      updatePointRequestPreview();
+      $("#fg-request-points-item")?.addEventListener("change", updatePointRequestPreview);
+      $("#fg-request-points-qty")?.addEventListener("input", updatePointRequestPreview);
       $("#fg-request-points-submit")?.addEventListener("click", submitPointRequest);
       $("#fg-load-my-point-requests")?.addEventListener("click", loadMyPointRequests);
     } catch (e) {
@@ -498,16 +559,23 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
 
   async function submitPointRequest() {
     try {
-      const amount = Number($("#fg-request-points-amount")?.value || 0);
-      const reason = $("#fg-request-points-reason")?.value.trim() || "";
-      if (!amount || amount <= 0) return alert("Enter a point amount.");
+      const calc = updatePointRequestPreview();
+      const extraNote = $("#fg-request-points-reason")?.value.trim() || "";
+      if (!calc.qty || calc.qty <= 0) return alert("Enter how many items.");
+      if (!calc.points || calc.points <= 0) return alert("That item amount converts to 0 points. Increase quantity or ask admin to update item values.");
+
+      const reason = [
+        `${calc.qty} × ${calc.itemName} @ ${money(calc.itemValue)} each`,
+        `total ${money(calc.totalValue)} ÷ ${money(calc.baseValue)} = ${calc.points} pts rounded down`,
+        extraNote ? `note: ${extraNote}` : ""
+      ].filter(Boolean).join(" • ");
 
       await api("/api/points/request", {
         method: "POST",
-        body: { amount, reason }
+        body: { amount: calc.points, reason }
       });
 
-      alert("Point request sent to admin for approval.");
+      alert(`Point request sent to admin for ${calc.points} point(s).`);
       await loadMyPointRequests();
     } catch (e) {
       alert(e.message);
@@ -1440,6 +1508,7 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     .fg-point-admin-grid { display: grid; gap: 8px; margin: 8px 0; }
     .fg-point-admin-row { display: grid; grid-template-columns: 1fr 150px; gap: 8px; }
     .fg-mini-preview { margin-top: 10px; padding: 10px; border-radius: 14px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.12); }
+    .fg-request-preview-line { color:#ffe9a8; margin-bottom: 5px; }
     .fg-point-table { width: 100%; border-collapse: collapse; margin-top: 8px; overflow: hidden; border-radius: 12px; }
     .fg-point-table th, .fg-point-table td { text-align: left; padding: 8px; border-bottom: 1px solid rgba(255,255,255,.10); }
     .fg-point-table th { font-size: 11px; text-transform: uppercase; color: #d8cdf1; background: rgba(255,255,255,.06); }
