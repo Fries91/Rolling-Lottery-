@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.32
+// @version      1.0.31
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -68,39 +68,19 @@
     return "$" + Number(n || 0).toLocaleString();
   }
 
-  function defaultPointItems(base = 820000) {
-    return [
-      { name: "Donator Pack", value: 23500000, points: Math.floor(23500000 / base) },
-      { name: "Feathery Hotel Coupon", value: 12000000, points: Math.floor(12000000 / base) },
-      { name: "Drug Pack", value: 4000000, points: Math.floor(4000000 / base) },
-      { name: "Erotic DVD", value: 3600000, points: Math.floor(3600000 / base) },
-      { name: "Xanax", value: 820000, points: Math.floor(820000 / base) },
-    ];
-  }
-
-  function normalizePointConversion(conversion) {
-    const c = conversion || {};
-    const base = Math.max(1, Number(c.base_value || 820000));
-    const items = (c.items && c.items.length ? c.items : defaultPointItems(base)).map((item, idx) => {
-      const value = Math.max(0, Number(item.value || 0));
-      return {
-        slot: Number(item.slot || idx + 1),
-        name: item.name || `Item ${idx + 1}`,
-        value,
-        points: Math.floor(value / base)
-      };
-    });
-    return { base_value: base, items };
-  }
-
   function pointRowsHtml(conversion) {
-    const c = normalizePointConversion(conversion);
+    const c = conversion || {};
+    const base = Math.max(1, Number(c.base_value || 850000));
+    const items = c.items || [];
+    if (!items.length) {
+      return `<div class="fg-muted">No point conversion items set yet.</div>`;
+    }
     return `
-      <div class="fg-muted">1 point = ${money(c.base_value)} value. Item values are rounded down.</div>
+      <div class="fg-muted">1 point = ${money(base)} value. Item values are rounded down.</div>
       <table class="fg-point-table">
         <thead><tr><th>Item</th><th>Value</th><th>Points</th></tr></thead>
         <tbody>
-          ${c.items.map(item => `
+          ${items.map(item => `
             <tr>
               <td>${esc(item.name)}</td>
               <td>${money(item.value)}</td>
@@ -110,42 +90,6 @@
         </tbody>
       </table>
     `;
-  }
-
-  function pointRequestSelectOptions(conversion) {
-    const c = normalizePointConversion(conversion);
-    return c.items.map(item => `
-      <option value="${esc(item.slot)}" data-name="${esc(item.name)}" data-value="${esc(item.value)}" data-base="${esc(c.base_value)}">
-        ${esc(item.name)} — ${money(item.value)} = ${Number(item.points || 0).toLocaleString()} pts each
-      </option>
-    `).join("");
-  }
-
-  function updatePointRequestPreview() {
-    const sel = $("#fg-request-points-item");
-    const qtyInput = $("#fg-request-points-qty");
-    const preview = $("#fg-request-points-preview");
-    if (!sel || !qtyInput || !preview) return { points: 0, itemName: "", qty: 0, itemValue: 0, totalValue: 0, baseValue: 820000 };
-
-    const opt = sel.selectedOptions && sel.selectedOptions[0];
-    const itemName = opt?.dataset?.name || opt?.textContent?.trim() || "Item";
-    const itemValue = Math.max(0, Number(opt?.dataset?.value || 0));
-    const baseValue = Math.max(1, Number(opt?.dataset?.base || 820000));
-    const qty = Math.max(0, Math.floor(Number(qtyInput.value || 0)));
-    if (qtyInput.value && String(qtyInput.value) !== String(qty)) qtyInput.value = qty || "";
-
-    const totalValue = itemValue * qty;
-    const points = Math.floor(totalValue / baseValue);
-    preview.innerHTML = qty > 0
-      ? `
-        <div class="fg-request-preview-line"><b>${esc(qty)} × ${esc(itemName)}</b></div>
-        <div>Total value: <b>${money(totalValue)}</b></div>
-        <div>Points request: <b>${Number(points).toLocaleString()} pts</b></div>
-        <div class="fg-muted">Formula: ${money(totalValue)} ÷ ${money(baseValue)}, rounded down.</div>
-      `
-      : `<div class="fg-muted">Choose an item and quantity to preview the points before sending.</div>`;
-
-    return { points, itemName, qty, itemValue, totalValue, baseValue };
   }
 
   function drawDate(ts) {
@@ -220,7 +164,6 @@
       </div>
       <div class="fg-tabs">
         <button data-tab="overview">Overview</button>
-        <button data-tab="entry">Entry</button>
         <button data-tab="points">Points</button>
         <button data-tab="rules">Rules</button>
         <button data-tab="winners">Winners</button>
@@ -304,7 +247,6 @@
     if (!state) return refresh();
     setTabClasses();
     if (activeTab === "overview") return renderOverview();
-    if (activeTab === "entry") return renderEntry();
     if (activeTab === "points") return renderPoints();
     if (activeTab === "rules") return renderRules();
     if (activeTab === "winners") return renderWinners();
@@ -381,12 +323,51 @@
             ${d.status === "closed" ? `<span class="fg-preview-line">Pending</span>` : ""}
             <span>Status: ${d.status === "closed" ? "Pending" : esc(d.status)}</span>
             ${d.winner_name ? `<span class="fg-winner-line">Winner: ${esc(d.winner_name)} [${esc(d.winner_player_id)}] — Admin send reward</span>` : ""}
+            ${d.status === "open" && !d.winner_name ? `
+              <div class="fg-overview-entry-box">
+                <label>Points to use for this event</label>
+                <input class="fg-input fg-overview-entry-points" data-draw-id="${esc(d.id)}" type="number" min="${esc(d.point_cost || 1)}" max="${esc(d.max_entries_per_player || 1)}" value="${esc(d.point_cost || 1)}">
+                <p class="fg-muted">Minimum: ${esc(d.point_cost || 1)} point(s). Max: ${esc(d.max_entries_per_player || 1)} point(s). Points are deducted when you enter.</p>
+                <button class="fg-primary fg-overview-enter-btn" data-draw-id="${esc(d.id)}" data-title="${esc(d.title)}">Enter This Event</button>
+              </div>
+            ` : ""}
           </div>
         `).join("")}
       `;
+      attachOverviewEntryHandlers();
     } catch (e) {
       // silent overview failure
     }
+  }
+
+  function attachOverviewEntryHandlers() {
+    document.querySelectorAll(".fg-overview-enter-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        if (!user) {
+          alert("Login from the Rules tab before entering events.");
+          activeTab = "rules";
+          render();
+          return;
+        }
+        const drawId = Number(btn.dataset.drawId || 0);
+        const title = btn.dataset.title || "this event";
+        const input = document.querySelector(`.fg-overview-entry-points[data-draw-id="${drawId}"]`);
+        const pointsSpent = Number(input?.value || 0);
+        if (!drawId) return alert("Could not read event ID.");
+        if (pointsSpent <= 0) return alert("Enter at least 1 point.");
+        try {
+          btn.disabled = true;
+          btn.textContent = "Entering...";
+          await api("/api/enter", { method: "POST", body: { draw_id: drawId, points_spent: pointsSpent } });
+          alert(`Entered ${title} with ${pointsSpent} point(s).`);
+          await refresh();
+        } catch (e) {
+          alert(e.message);
+          btn.disabled = false;
+          btn.textContent = "Enter This Event";
+        }
+      });
+    });
   }
 
   function renderEntry() {
@@ -487,17 +468,12 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
         </div>
 
         <div class="fg-card">
-          <b>Request Points From Items</b>
-          <p class="fg-muted">Choose the item you are giving/admin is counting, enter how many, and the app will convert it to points before sending the request.</p>
-          <label>Item</label>
-          <select class="fg-input" id="fg-request-points-item">
-            ${pointRequestSelectOptions(res.conversion)}
-          </select>
-          <label>How Many</label>
-          <input class="fg-input" id="fg-request-points-qty" type="number" min="1" step="1" value="1" placeholder="Example: 3">
-          <div id="fg-request-points-preview" class="fg-mini-preview"></div>
-          <label>Extra Note For Admin</label>
-          <input class="fg-input" id="fg-request-points-reason" placeholder="Optional note, example: sent items / trade pending">
+          <b>Request Points</b>
+          <p class="fg-muted">Ask admin for free points. Admin approval is required before points are added.</p>
+          <label>Amount Requested</label>
+          <input class="fg-input" id="fg-request-points-amount" type="number" min="1" placeholder="Example: 10">
+          <label>Reason</label>
+          <input class="fg-input" id="fg-request-points-reason" placeholder="Example: event participation">
           <button class="fg-primary" id="fg-request-points-submit">Send Point Request</button>
           <button class="fg-secondary" id="fg-load-my-point-requests">My Requests</button>
           <div id="fg-my-point-requests"></div>
@@ -526,9 +502,6 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
         }
       });
 
-      updatePointRequestPreview();
-      $("#fg-request-points-item")?.addEventListener("change", updatePointRequestPreview);
-      $("#fg-request-points-qty")?.addEventListener("input", updatePointRequestPreview);
       $("#fg-request-points-submit")?.addEventListener("click", submitPointRequest);
       $("#fg-load-my-point-requests")?.addEventListener("click", loadMyPointRequests);
     } catch (e) {
@@ -559,23 +532,16 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
 
   async function submitPointRequest() {
     try {
-      const calc = updatePointRequestPreview();
-      const extraNote = $("#fg-request-points-reason")?.value.trim() || "";
-      if (!calc.qty || calc.qty <= 0) return alert("Enter how many items.");
-      if (!calc.points || calc.points <= 0) return alert("That item amount converts to 0 points. Increase quantity or ask admin to update item values.");
-
-      const reason = [
-        `${calc.qty} × ${calc.itemName} @ ${money(calc.itemValue)} each`,
-        `total ${money(calc.totalValue)} ÷ ${money(calc.baseValue)} = ${calc.points} pts rounded down`,
-        extraNote ? `note: ${extraNote}` : ""
-      ].filter(Boolean).join(" • ");
+      const amount = Number($("#fg-request-points-amount")?.value || 0);
+      const reason = $("#fg-request-points-reason")?.value.trim() || "";
+      if (!amount || amount <= 0) return alert("Enter a point amount.");
 
       await api("/api/points/request", {
         method: "POST",
-        body: { amount: calc.points, reason }
+        body: { amount, reason }
       });
 
-      alert(`Point request sent to admin for ${calc.points} point(s).`);
+      alert("Point request sent to admin for approval.");
       await loadMyPointRequests();
     } catch (e) {
       alert(e.message);
@@ -748,13 +714,13 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
 
       <div class="fg-card private">
         <b>Point Conversion Items</b>
-        <p class="fg-muted">Add up to 5 accepted items. Item names are locked. Change the item values any time. Points use item value ÷ base point value, rounded down.</p>
+        <p class="fg-muted">Add up to 5 accepted items. Points use item value ÷ base point value, rounded down.</p>
         <label>Base Value Per 1 Point</label>
-        <input class="fg-input" id="fg-point-base-value" type="number" min="1" value="820000">
+        <input class="fg-input" id="fg-point-base-value" type="number" min="1" value="850000">
         <div class="fg-point-admin-grid">
           ${[1,2,3,4,5].map(i => `
             <div class="fg-point-admin-row">
-              <div class="fg-locked-item" id="fg-point-item-name-${i}">Item ${i}</div>
+              <input class="fg-input" id="fg-point-item-name-${i}" placeholder="Item ${i} name">
               <input class="fg-input" id="fg-point-item-value-${i}" type="number" min="0" placeholder="Value">
             </div>
           `).join("")}
@@ -850,31 +816,22 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
 
   function fillPointConversionInputs(conversion) {
     const c = conversion || {};
-    const base = Math.max(1, Number(c.base_value || 820000));
+    const base = Math.max(1, Number(c.base_value || 850000));
     const baseInput = $("#fg-point-base-value");
     if (baseInput) baseInput.value = base;
-
-    const defaults = [
-      { name: "Donator Pack", value: 23500000 },
-      { name: "Feathery Hotel Coupon", value: 12000000 },
-      { name: "Drug Pack", value: 4000000 },
-      { name: "Erotic DVD", value: 3600000 },
-      { name: "Xanax", value: 820000 },
-    ];
 
     for (let i = 1; i <= 5; i++) {
       const nameEl = $(`#fg-point-item-name-${i}`);
       const valueEl = $(`#fg-point-item-value-${i}`);
-      const fallback = defaults[i - 1] || { name: "", value: 0 };
-      if (nameEl) nameEl.textContent = fallback.name;
-      if (valueEl) valueEl.value = fallback.value || "";
+      if (nameEl) nameEl.value = "";
+      if (valueEl) valueEl.value = "";
     }
 
-    ((c.items && c.items.length) ? c.items : defaults).slice(0, 5).forEach((item, idx) => {
+    (c.items || []).slice(0, 5).forEach((item, idx) => {
       const i = idx + 1;
       const nameEl = $(`#fg-point-item-name-${i}`);
       const valueEl = $(`#fg-point-item-value-${i}`);
-      if (nameEl) nameEl.textContent = item.name || (defaults[idx]?.name || "");
+      if (nameEl) nameEl.value = item.name || "";
       if (valueEl) valueEl.value = Number(item.value || 0);
     });
 
@@ -894,12 +851,12 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
 
   async function adminSavePointConversions() {
     try {
-      const baseValue = Math.max(1, Number($("#fg-point-base-value")?.value || 820000));
+      const baseValue = Math.max(1, Number($("#fg-point-base-value")?.value || 850000));
       const items = [];
       for (let i = 1; i <= 5; i++) {
-        const name = $(`#fg-point-item-name-${i}`)?.textContent.trim() || "";
+        const name = $(`#fg-point-item-name-${i}`)?.value.trim() || "";
         const value = Number($(`#fg-point-item-value-${i}`)?.value || 0);
-        if (name && value > 0) items.push({ slot: i, name, value });
+        if (name && value > 0) items.push({ name, value });
       }
       const res = await api("/api/admin/point-conversions", { method: "POST", body: { base_value: baseValue, items } });
       fillPointConversionInputs(res.conversion);
@@ -1468,7 +1425,6 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     .fg-card.win { border-color: rgba(90,255,170,.4); background:#13251d; }
     .fg-card.bad { border-color: rgba(255,90,90,.45); background:#2b1518; }
     .fg-input { width:100%; box-sizing:border-box; padding:10px; margin:7px 0 10px; border-radius:10px; border:1px solid rgba(255,255,255,.18); background:#0e1017; color:white; }
-    .fg-locked-item { width:100%; box-sizing:border-box; padding:10px; margin:7px 0 10px; border-radius:10px; border:1px solid rgba(255,255,255,.14); background:#141722; color:#ffe9a8; font-weight:900; }
     .fg-primary, .fg-secondary, .fg-warn { width:100%; padding:10px; margin:5px 0; border-radius:12px; border:0; color:white; font-weight:800; cursor:pointer; }
     .fg-primary { background:#6b38b6; }
     .fg-primary:disabled { opacity:.55; cursor:not-allowed; }
@@ -1487,6 +1443,10 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     .fg-winner-line { color:#9affc3 !important; font-weight:900; }
     .fg-preview-line { color:#ffe49a !important; font-weight:900; }
     .fg-entry-actions { display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:6px; margin-top:8px; }
+
+    .fg-overview-entry-box { margin-top:10px; padding:10px; border-radius:12px; border:1px solid rgba(255,255,255,.12); background:rgba(0,0,0,.18); }
+    .fg-overview-entry-box label { display:block; margin-bottom:6px; font-weight:800; color:#fff; }
+    .fg-overview-entry-box .fg-primary { margin-top:8px; }
     .fg-slot-actions { display:grid; grid-template-columns:1fr 1fr 1fr 1fr 1fr; gap:6px; margin-top:8px; }
     .fg-event-slot { margin-top:10px; }
     .fg-mini { padding:7px; border:0; border-radius:9px; background:#2f3447; color:white; font-weight:800; }
@@ -1508,7 +1468,6 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     .fg-point-admin-grid { display: grid; gap: 8px; margin: 8px 0; }
     .fg-point-admin-row { display: grid; grid-template-columns: 1fr 150px; gap: 8px; }
     .fg-mini-preview { margin-top: 10px; padding: 10px; border-radius: 14px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.12); }
-    .fg-request-preview-line { color:#ffe9a8; margin-bottom: 5px; }
     .fg-point-table { width: 100%; border-collapse: collapse; margin-top: 8px; overflow: hidden; border-radius: 12px; }
     .fg-point-table th, .fg-point-table td { text-align: left; padding: 8px; border-bottom: 1px solid rgba(255,255,255,.10); }
     .fg-point-table th { font-size: 11px; text-transform: uppercase; color: #d8cdf1; background: rgba(255,255,255,.06); }
