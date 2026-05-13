@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.16
+// @version      1.0.18
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -71,6 +71,23 @@
   function drawDate(ts) {
     if (!ts) return "Not set";
     return new Date(Number(ts) * 1000).toLocaleString();
+  }
+
+  function fmtTime(ts) {
+    if (!ts) return "Not set";
+    return new Date(Number(ts) * 1000).toLocaleString();
+  }
+
+  function countdownText(ts) {
+    if (!ts) return "No end time";
+    const diff = Number(ts) * 1000 - Date.now();
+    if (diff <= 0) return "Ended";
+    const mins = Math.floor(diff / 60000);
+    const hrs = Math.floor(mins / 60);
+    const days = Math.floor(hrs / 24);
+    if (days > 0) return `${days}d ${hrs % 24}h`;
+    if (hrs > 0) return `${hrs}h ${mins % 60}m`;
+    return `${Math.max(0, mins)}m`;
   }
 
   function statusPill(status) {
@@ -226,9 +243,42 @@
         </div>
       ` : ""}
 
+      <div id="fg-event-overview-boxes"></div>
       <button class="fg-secondary" id="fg-refresh">Refresh</button>
     `;
     $("#fg-refresh").addEventListener("click", refresh);
+    renderEventOverviewBoxes();
+  }
+
+  async function renderEventOverviewBoxes() {
+    try {
+      const res = await api("/api/draws");
+      const box = $("#fg-event-overview-boxes");
+      if (!box) return;
+
+      const events = (res.draws || []).filter(d => (d.draw_type || "rolling") === "event");
+      if (!events.length) {
+        box.innerHTML = "";
+        return;
+      }
+
+      box.innerHTML = `
+        <div class="fg-section-title">Other Events</div>
+        ${events.map((d, idx) => `
+          <div class="fg-card fg-event-card fg-event-color-${idx % 5}">
+            <b>#${esc(d.id)} — ${esc(d.title)}</b>
+            <span>Prize: ${esc(d.event_prize || d.prize_label || "Prize")}</span>
+            <span>Cost: ${esc(d.point_cost || 1)} point(s)</span>
+            <span>Starts: ${esc(fmtTime(d.start_at))}</span>
+            <span>Ends: ${esc(fmtTime(d.end_at))} • ${esc(countdownText(d.end_at))}</span>
+            <span>Status: ${esc(d.status)}</span>
+            ${d.winner_name ? `<span class="fg-winner-line">Winner: ${esc(d.winner_name)} [${esc(d.winner_player_id)}] — Admin send reward</span>` : ""}
+          </div>
+        `).join("")}
+      `;
+    } catch (e) {
+      // silent overview failure
+    }
   }
 
   function renderEntry() {
@@ -458,17 +508,17 @@
 
       <div class="fg-card private">
         <b>Other Events / Draws</b>
-        <p class="fg-muted">Create extra event draws separate from the rolling jackpot.</p>
+        <p class="fg-muted">Create extra event draws separate from the rolling jackpot. Event prize is shown as text; point cost controls the minimum points needed to enter.</p>
         <label>Event Title</label>
         <input class="fg-input" id="fg-event-title" placeholder="Event draw title">
         <label>Prize</label>
         <input class="fg-input" id="fg-event-prize" placeholder="Example: 50m cash / Xanax bundle / Donator Pack">
         <label>Cost of Entry Per Point</label>
         <input class="fg-input" id="fg-event-point-cost" type="number" min="1" value="1">
-        <label>Event Base Prize Value</label>
-        <input class="fg-input" id="fg-event-base" type="number" value="0">
-        <label>Value Added Per Approved Point</label>
-        <input class="fg-input" id="fg-event-entry-value" type="number" value="0">
+        <label>Start Time</label>
+        <input class="fg-input" id="fg-event-start" type="datetime-local">
+        <label>End Time</label>
+        <input class="fg-input" id="fg-event-end" type="datetime-local">
         <button class="fg-primary" id="fg-create-draw">Create Other Event Draw</button>
         <button class="fg-secondary" id="fg-load-draws">Load All Draws</button>
         <div id="fg-draws-list"></div>
@@ -618,8 +668,10 @@
       const title = $("#fg-event-title")?.value.trim() || "Other Event Draw";
       const eventPrize = $("#fg-event-prize")?.value.trim() || "Event Prize";
       const pointCost = Number($("#fg-event-point-cost")?.value || 1);
-      const base = Number($("#fg-event-base")?.value || 0);
-      const entryValue = Number($("#fg-event-entry-value")?.value || 0);
+      const base = 0;
+      const entryValue = 0;
+      const eventStart = $("#fg-event-start")?.value ? Math.floor(new Date($("#fg-event-start").value).getTime() / 1000) : null;
+      const eventEnd = $("#fg-event-end")?.value ? Math.floor(new Date($("#fg-event-end").value).getTime() / 1000) : null;
 
       const res = await api("/api/admin/draws", {
         method: "POST",
@@ -633,7 +685,9 @@
           entry_item_value: entryValue,
           rollover_pool: 0,
           status: "open",
-          draw_type: "event"
+          draw_type: "event",
+          start_at: eventStart,
+          end_at: eventEnd
         }
       });
       alert("Created event draw #" + res.draw_id);
@@ -657,11 +711,14 @@
             <div><b>#${esc(d.id)} — ${esc(d.title)}</b></div>
             <div>${statusPill(d.status)}</div>
             <div class="fg-muted">Prize: ${esc(d.event_prize || d.prize_label || "Prize")} • Cost: ${esc(d.point_cost || 1)} pt(s)</div>
+            <div class="fg-muted">Starts: ${esc(fmtTime(d.start_at))} • Ends: ${esc(fmtTime(d.end_at))} • ${esc(countdownText(d.end_at))}</div>
             <div class="fg-muted">Jackpot: ${money(d.total_pool)} • Approved: ${esc(d.approved_entry_count || d.entry_count || 0)} • Points: ${esc(d.approved_points_total || 0)} • Pending: ${esc(d.pending_entry_count || 0)}</div>
+            ${d.winner_name ? `<div class="fg-winner-line">Winner: ${esc(d.winner_name)} [${esc(d.winner_player_id)}] — Give reward</div>` : ""}
             <div class="fg-muted">Next Start: ${money(d.next_starting_jackpot || d.rollover_cut || 0)}</div>
             <div class="fg-entry-actions">
               <button data-draw-open="${d.id}" class="fg-mini good">Open</button>
               <button data-draw-close="${d.id}" class="fg-mini">Close</button>
+              <button data-draw-clear="${d.id}" class="fg-mini">Clear</button>
               <button data-draw-delete="${d.id}" class="fg-mini badbtn">Delete</button>
             </div>
           </div>
@@ -670,6 +727,7 @@
 
       box.querySelectorAll("[data-draw-open]").forEach(b => b.addEventListener("click", () => setDrawStatus(Number(b.dataset.drawOpen), "open")));
       box.querySelectorAll("[data-draw-close]").forEach(b => b.addEventListener("click", () => setDrawStatus(Number(b.dataset.drawClose), "closed")));
+      box.querySelectorAll("[data-draw-clear]").forEach(b => b.addEventListener("click", () => clearDraw(Number(b.dataset.drawClear))));
       box.querySelectorAll("[data-draw-delete]").forEach(b => b.addEventListener("click", () => deleteDraw(Number(b.dataset.drawDelete))));
     } catch (e) {
       alert(e.message);
@@ -679,6 +737,19 @@
   async function setDrawStatus(drawId, status) {
     try {
       await api("/api/admin/draws/status", { method: "POST", body: { draw_id: drawId, status } });
+      await refresh();
+      activeTab = "admin";
+      render();
+      await loadDraws();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  async function clearDraw(drawId) {
+    if (!confirm("Clear event draw #" + drawId + "? This removes its entries and winner and closes it.")) return;
+    try {
+      await api("/api/admin/draws/clear", { method: "POST", body: { draw_id: drawId } });
       await refresh();
       activeTab = "admin";
       render();
@@ -743,7 +814,16 @@
     .fg-warn { background:#a15b13; }
     .fg-split { display:grid; gap:6px; background:#11131a; border-radius:12px; padding:10px; margin:10px 0; }
     .fg-entry { padding:10px; border:1px solid rgba(255,255,255,.1); border-radius:12px; margin:8px 0; background:#11131a; }
-    .fg-entry-actions { display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; margin-top:8px; }
+    .fg-section-title { font-weight:900; margin:14px 0 8px; color:#ffe9a8; }
+    .fg-event-card { border-width:1px; }
+    .fg-event-card span { margin:3px 0; }
+    .fg-event-color-0 { background:#142326; border-color:#3bb7c9; }
+    .fg-event-color-1 { background:#261f14; border-color:#d49b3f; }
+    .fg-event-color-2 { background:#1d1426; border-color:#ad70d6; }
+    .fg-event-color-3 { background:#14261b; border-color:#55bf78; }
+    .fg-event-color-4 { background:#261417; border-color:#d65f73; }
+    .fg-winner-line { color:#9affc3 !important; font-weight:900; }
+    .fg-entry-actions { display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:6px; margin-top:8px; }
     .fg-mini { padding:7px; border:0; border-radius:9px; background:#2f3447; color:white; font-weight:800; }
     .fg-mini.good { background:#176b3a; }
     .fg-mini.badbtn { background:#7a2020; }
