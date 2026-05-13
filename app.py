@@ -122,7 +122,10 @@ def ensure_giveaways(conn):
             deleted_at INTEGER,
             draw_type TEXT NOT NULL DEFAULT 'rolling',
             event_prize TEXT,
-            point_cost INTEGER NOT NULL DEFAULT 1
+            point_cost INTEGER NOT NULL DEFAULT 1,
+            start_at INTEGER,
+            end_at INTEGER,
+            auto_drawn_at INTEGER
         )
     """)
     for col, sql in [
@@ -147,6 +150,9 @@ def ensure_giveaways(conn):
         ("draw_type", "draw_type TEXT NOT NULL DEFAULT 'rolling'"),
         ("event_prize", "event_prize TEXT"),
         ("point_cost", "point_cost INTEGER NOT NULL DEFAULT 1"),
+        ("start_at", "start_at INTEGER"),
+        ("end_at", "end_at INTEGER"),
+        ("auto_drawn_at", "auto_drawn_at INTEGER"),
     ]:
         add_col(conn, "giveaways", col, sql)
 
@@ -341,6 +347,9 @@ def clean_giveaway(conn, g, private=False):
         "draw_type": g["draw_type"] if "draw_type" in g.keys() else "rolling",
         "event_prize": g["event_prize"] if "event_prize" in g.keys() else None,
         "point_cost": int(g["point_cost"] or 1) if "point_cost" in g.keys() else 1,
+        "start_at": g["start_at"] if "start_at" in g.keys() else None,
+        "end_at": g["end_at"] if "end_at" in g.keys() else None,
+        "auto_drawn_at": g["auto_drawn_at"] if "auto_drawn_at" in g.keys() else None,
         "base_payout": base_payout,
         "entry_item_name": g["entry_item_name"] or "Xanax",
         "entry_item_value": entry_item_value,
@@ -505,6 +514,7 @@ def state():
     private = bool(s and int(s["player_id"]) == ADMIN_PLAYER_ID)
 
     with db() as conn:
+        auto_draw_ended_events(conn)
         g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL AND draw_type='rolling' ORDER BY id DESC LIMIT 1").fetchone()
         if not g:
             init_db()
@@ -552,6 +562,12 @@ def enter(s):
 
         if not g or g["status"] != "open":
             return jsonify({"ok": False, "error": "Draw is not open"}), 400
+
+        current_time = now_ts()
+        if "start_at" in g.keys() and g["start_at"] and current_time < int(g["start_at"]):
+            return jsonify({"ok": False, "error": "Draw has not started yet"}), 400
+        if "end_at" in g.keys() and g["end_at"] and current_time >= int(g["end_at"]):
+            return jsonify({"ok": False, "error": "Draw has ended"}), 400
 
         minimum_cost = int(g["point_cost"] or 1) if "point_cost" in g.keys() else 1
         if points_spent < minimum_cost:
@@ -814,6 +830,58 @@ def admin_points_adjust(s):
     return jsonify({"ok": True, "player_id": player_id, "balance": new_balance})
 
 
+def auto_draw_ended_events(conn):
+    """
+    Auto-picks winners for ended open event draws.
+    Uses approved entries weighted by points_spent.
+    Rolling jackpot is not auto-drawn here.
+    """
+    t = now_ts()
+    ended = conn.execute("""
+        SELECT *
+        FROM giveaways
+        WHERE deleted_at IS NULL
+          AND draw_type='event'
+          AND status='open'
+          AND end_at IS NOT NULL
+          AND end_at <= ?
+          AND auto_drawn_at IS NULL
+    """, (t,)).fetchall()
+
+    for g in ended:
+        rows = conn.execute("""
+            SELECT player_id, name, points_spent
+            FROM entries
+            WHERE giveaway_id=? AND status='approved'
+        """, (g["id"],)).fetchall()
+
+        if not rows:
+            conn.execute("""
+                UPDATE giveaways
+                SET status='closed', auto_drawn_at=?, updated_at=?
+                WHERE id=?
+            """, (t, t, g["id"]))
+            continue
+
+        pool = []
+        for row in rows:
+            weight = max(1, int(row["points_spent"] or 1))
+            for _ in range(weight):
+                pool.append(row)
+
+        winner = secrets.choice(pool)
+        conn.execute("""
+            UPDATE giveaways
+            SET status='drawn',
+                winner_player_id=?,
+                winner_name=?,
+                auto_drawn_at=?,
+                updated_at=?
+            WHERE id=?
+        """, (winner["player_id"], winner["name"], t, t, g["id"]))
+
+
+
 @app.get("/api/draws")
 def api_draws():
     s = session()
@@ -822,6 +890,7 @@ def api_draws():
     with db() as conn:
         ensure_giveaways(conn)
         ensure_entries(conn)
+        auto_draw_ended_events(conn)
         rows = conn.execute("""
             SELECT *
             FROM giveaways
@@ -843,29 +912,38 @@ def admin_create_draw(s):
     if draw_type not in ("rolling", "event"):
         draw_type = "event"
 
+    start_at = int(data["start_at"]) if str(data.get("start_at") or "").isdigit() else None
+    end_at = int(data["end_at"]) if str(data.get("end_at") or "").isdigit() else None
+
+    if start_at and end_at and end_at <= start_at:
+        return jsonify({"ok": False, "error": "End time must be after start time"}), 400
+
     with db() as conn:
         ensure_giveaways(conn)
         conn.execute("""
             INSERT INTO giveaways
             (title, prize_label, total_pool, base_payout, entry_item_name, entry_item_value,
              player_percent, rollover_percent, reserve_percent, rollover_pool, status, draw_at,
-             created_by, created_at, updated_at, draw_type, event_prize, point_cost)
-            VALUES (?, ?, 0, ?, ?, ?, 60, 20, 20, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             created_by, created_at, updated_at, draw_type, event_prize, point_cost,
+             start_at, end_at, auto_drawn_at)
+            VALUES (?, ?, 0, ?, ?, ?, 60, 20, 20, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
         """, (
             (data.get("title") or "Other Event Draw").strip(),
-            (data.get("prize_label") or "Event Prize").strip(),
+            (data.get("prize_label") or data.get("event_prize") or "Event Prize").strip(),
             int(data.get("base_payout") or 0),
             (data.get("entry_item_name") or "Free Points/Event").strip(),
             int(data.get("entry_item_value") or 0),
             int(data.get("rollover_pool") or 0),
             (data.get("status") or "open").strip().lower(),
-            int(data["draw_at"]) if str(data.get("draw_at") or "").isdigit() else None,
+            int(data["draw_at"]) if str(data.get("draw_at") or "").isdigit() else end_at,
             int(s["player_id"]),
             t,
             t,
             draw_type,
             (data.get("event_prize") or data.get("prize_label") or "Event Prize").strip(),
             int(data.get("point_cost") or 1),
+            start_at,
+            end_at,
         ))
         new_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
 
@@ -894,6 +972,42 @@ def admin_delete_draw(s):
             "UPDATE giveaways SET status='deleted', deleted_at=?, updated_at=? WHERE id=?",
             (now_ts(), now_ts(), draw_id)
         )
+
+    return jsonify({"ok": True})
+
+
+@app.post("/api/admin/draws/clear")
+@admin_required
+def admin_clear_draw(s):
+    data = request.get_json(force=True, silent=True) or {}
+    draw_id = int(data.get("draw_id") or 0)
+
+    if not draw_id:
+        return jsonify({"ok": False, "error": "Missing draw id"}), 400
+
+    with db() as conn:
+        ensure_giveaways(conn)
+        row = conn.execute(
+            "SELECT id, draw_type FROM giveaways WHERE id=? AND deleted_at IS NULL",
+            (draw_id,)
+        ).fetchone()
+
+        if not row:
+            return jsonify({"ok": False, "error": "Draw not found"}), 404
+
+        if row["draw_type"] == "rolling":
+            return jsonify({"ok": False, "error": "Use rolling jackpot controls for the rolling draw"}), 400
+
+        conn.execute("DELETE FROM entries WHERE giveaway_id=?", (draw_id,))
+        conn.execute("""
+            UPDATE giveaways
+            SET status='closed',
+                winner_player_id=NULL,
+                winner_name=NULL,
+                auto_drawn_at=NULL,
+                updated_at=?
+            WHERE id=?
+        """, (now_ts(), draw_id))
 
     return jsonify({"ok": True})
 
