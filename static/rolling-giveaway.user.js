@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.12
+// @version      1.0.13
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -423,6 +423,14 @@
         <div id="fg-points-balances"></div>
       </div>
 
+      <div class="fg-card private">
+        <b>Admin Draw Manager</b>
+        <p class="fg-muted">Create more than one draw, load all draws, or delete a draw.</p>
+        <button class="fg-primary" id="fg-create-draw">Create New Draw From Settings Above</button>
+        <button class="fg-secondary" id="fg-load-draws">Load All Draws</button>
+        <div id="fg-draws-list"></div>
+      </div>
+
       <div class="fg-card">
         <b>Entry Approvals</b>
         <button class="fg-secondary" id="fg-load-entries">Load Entries</button>
@@ -556,6 +564,77 @@
       box.innerHTML = (res.balances || []).length
         ? res.balances.map(x => `<div class="fg-entry"><b>${esc(x.name)} [${esc(x.player_id)}]</b><br><span>${esc(x.balance)} pts</span></div>`).join("")
         : `<div class="fg-muted">No point balances yet.</div>`;
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+
+  async function createDrawFromSettings() {
+    try {
+      const res = await api("/api/admin/draws", {
+        method: "POST",
+        body: { ...adminPayload(), status: "open" }
+      });
+      alert("Created draw #" + res.draw_id);
+      await refresh();
+      activeTab = "admin";
+      render();
+      await loadDraws();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  async function loadDraws() {
+    try {
+      const res = await api("/api/draws");
+      const box = $("#fg-draws-list");
+
+      box.innerHTML = (res.draws || []).length
+        ? res.draws.map(d => `
+          <div class="fg-entry">
+            <div><b>#${esc(d.id)} — ${esc(d.title)}</b></div>
+            <div>${statusPill(d.status)}</div>
+            <div class="fg-muted">Jackpot: ${money(d.total_pool)} • Approved: ${esc(d.approved_entry_count || d.entry_count || 0)} • Pending: ${esc(d.pending_entry_count || 0)}</div>
+            <div class="fg-muted">Next Start: ${money(d.next_starting_jackpot || d.rollover_cut || 0)}</div>
+            <div class="fg-entry-actions">
+              <button data-draw-open="${d.id}" class="fg-mini good">Open</button>
+              <button data-draw-close="${d.id}" class="fg-mini">Close</button>
+              <button data-draw-delete="${d.id}" class="fg-mini badbtn">Delete</button>
+            </div>
+          </div>
+        `).join("")
+        : `<div class="fg-muted">No draws found.</div>`;
+
+      box.querySelectorAll("[data-draw-open]").forEach(b => b.addEventListener("click", () => setDrawStatus(Number(b.dataset.drawOpen), "open")));
+      box.querySelectorAll("[data-draw-close]").forEach(b => b.addEventListener("click", () => setDrawStatus(Number(b.dataset.drawClose), "closed")));
+      box.querySelectorAll("[data-draw-delete]").forEach(b => b.addEventListener("click", () => deleteDraw(Number(b.dataset.drawDelete))));
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  async function setDrawStatus(drawId, status) {
+    try {
+      await api("/api/admin/draws/status", { method: "POST", body: { draw_id: drawId, status } });
+      await refresh();
+      activeTab = "admin";
+      render();
+      await loadDraws();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  async function deleteDraw(drawId) {
+    if (!confirm("Delete draw #" + drawId + "? This hides it from the app.")) return;
+    try {
+      await api("/api/admin/draws/delete", { method: "POST", body: { draw_id: drawId } });
+      await refresh();
+      activeTab = "admin";
+      render();
+      await loadDraws();
     } catch (e) {
       alert(e.message);
     }
