@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.25
+// @version      1.0.28
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -199,6 +199,7 @@
       user = res.user || null;
       updateTopbarJackpot();
       render();
+      checkAdminWinnerNotifications();
     } catch (e) {
       renderError(e.message);
     } finally {
@@ -227,6 +228,23 @@
     if (activeTab === "winners") return renderWinners();
     if (activeTab === "admin" && isAdmin()) return renderAdmin();
     return renderOverview();
+  }
+
+  async function checkAdminWinnerNotifications() {
+    try {
+      if (!isAdmin()) return;
+      const res = await api("/api/admin/winner-notifications");
+      const winners = res.winners || [];
+      const seenKey = "fries91_giveaway_seen_winners_v1";
+      const seen = new Set(JSON.parse(localStorage.getItem(seenKey) || "[]"));
+      const fresh = winners.filter(w => !seen.has(String(w.id)));
+      if (fresh.length) {
+        const msg = fresh.map(w => `#${w.id} ${w.title}: ${w.winner_name} [${w.winner_player_id}]`).join("\\n");
+        alert("New event winner(s):\\n" + msg + "\\n\\nCheck Winners tab and send reward.");
+        fresh.forEach(w => seen.add(String(w.id)));
+        localStorage.setItem(seenKey, JSON.stringify([...seen].slice(-100)));
+      }
+    } catch (e) {}
   }
 
   function renderOverview() {
@@ -258,9 +276,9 @@
       const nowSec = Math.floor(Date.now() / 1000);
       const events = (res.draws || [])
         .filter(d => (d.draw_type || "rolling") === "event")
-        .filter(d => d.status === "open")
         .filter(d => !d.winner_name)
-        .filter(d => !d.end_at || Number(d.end_at) > nowSec)
+        .filter(d => d.status !== "drawn" && d.status !== "deleted")
+        .filter(d => d.status === "closed" || !d.end_at || Number(d.end_at) > nowSec)
         .slice(0, 5);
       if (!events.length) {
         box.innerHTML = "";
@@ -278,7 +296,8 @@
             <span>Starts: ${esc(fmtTime(d.start_at))}</span>
             <span>Ends: ${esc(fmtTime(d.end_at))} • ${esc(countdownText(d.end_at))}</span>
             <span>Entered: ${esc(d.total_entry_count || d.entry_count || 0)}</span>
-            <span>Status: ${esc(d.status)}</span>
+            ${d.status === "closed" ? `<span class="fg-preview-line">Pending</span>` : ""}
+            <span>Status: ${d.status === "closed" ? "Pending" : esc(d.status)}</span>
             ${d.winner_name ? `<span class="fg-winner-line">Winner: ${esc(d.winner_name)} [${esc(d.winner_player_id)}] — Admin send reward</span>` : ""}
           </div>
         `).join("")}
@@ -617,9 +636,28 @@
 
       <div class="fg-card private">
         <b>Other Events / Draws</b>
-        <p class="fg-muted">5 event slots. Create, update, activate, disable, clear, or delete each event.</p>
+        <p class="fg-muted">5 event slots. Create saves a pending preview on Overview. Activate opens it for 1 week. Use Test Event below for custom start/end.</p>
         <button class="fg-secondary" id="fg-load-draws">Refresh Event Slots</button>
         <div id="fg-event-slots"></div>
+
+        <div class="fg-card fg-event-slot" id="fg-test-event-box">
+          <b>Test Event</b>
+          <p class="fg-muted">Use this to test start/end countdown and auto winner quickly.</p>
+          <label>Test Event Title</label>
+          <input class="fg-input" id="fg-test-title" value="Test Event">
+          <label>Prize</label>
+          <input class="fg-input" id="fg-test-prize" value="Test Prize">
+          <label>Cost of Entry Per Point</label>
+          <input class="fg-input" id="fg-test-point-cost" type="number" min="1" value="1">
+          <label>Max Entries/Points Per Player</label>
+          <input class="fg-input" id="fg-test-max" type="number" min="1" value="1">
+          <label>Start Time</label>
+          <input class="fg-input" id="fg-test-start" type="datetime-local">
+          <label>End Time</label>
+          <input class="fg-input" id="fg-test-end" type="datetime-local">
+          <button class="fg-primary" id="fg-create-test-event">Create Test Event</button>
+        </div>
+
         <div id="fg-draws-list" style="display:none"></div>
       </div>
     `;
@@ -633,6 +671,7 @@
     $("#fg-load-point-requests")?.addEventListener("click", adminLoadPointRequests);
     $("#fg-load-draws")?.addEventListener("click", renderEventSlots);
     renderEventSlots();
+    $("#fg-create-test-event")?.addEventListener("click", createTestEvent);
     $("#fg-open").addEventListener("click", () => setStatus("open"));
     $("#fg-close-giveaway").addEventListener("click", () => setStatus("closed"));
   }
@@ -831,14 +870,14 @@
     const prize = event?.event_prize || event?.prize_label || "";
     const pointCost = event?.point_cost || 1;
     const maxEntries = event?.max_entries_per_player || 1;
-    const startVal = event?.start_at ? new Date(Number(event.start_at) * 1000).toISOString().slice(0, 16) : "";
-    const endVal = event?.end_at ? new Date(Number(event.end_at) * 1000).toISOString().slice(0, 16) : "";
-    const idLine = event ? `#${event.id} • ${event.status}` : "Empty slot";
+    const idLine = event ? `#${event.id} • ${event.status === "closed" ? "Pending" : event.status}` : "Empty slot";
+    const endLine = event?.end_at ? `Ends: ${fmtTime(event.end_at)} • ${countdownText(event.end_at)}` : "Not activated";
 
     return `
       <div class="fg-card fg-event-slot fg-event-color-${(slotNum - 1) % 5}" data-slot="${slotNum}" data-draw-id="${event?.id || ""}">
         <b>Event ${slotNum}</b>
         <div class="fg-muted">${esc(idLine)}</div>
+        <div class="fg-muted">${esc(endLine)}</div>
 
         <label>Event Title</label>
         <input class="fg-input" id="fg-event-${slotNum}-title" value="${esc(title)}">
@@ -852,23 +891,54 @@
         <label>Max Entries/Points Per Player</label>
         <input class="fg-input" id="fg-event-${slotNum}-max" type="number" min="1" value="${esc(maxEntries)}">
 
-        <label>Start Time</label>
-        <input class="fg-input" id="fg-event-${slotNum}-start" type="datetime-local" value="${esc(startVal)}">
-
-        <label>End Time</label>
-        <input class="fg-input" id="fg-event-${slotNum}-end" type="datetime-local" value="${esc(endVal)}">
-
         ${event?.winner_name ? `<div class="fg-winner-line">Winner: ${esc(event.winner_name)} [${esc(event.winner_player_id)}]</div>` : ""}
 
         <div class="fg-slot-actions">
           <button class="fg-mini good" data-slot-save="${slotNum}">${event ? "Update" : "Create"}</button>
-          <button class="fg-mini good" data-slot-open="${slotNum}" ${event ? "" : "disabled"}>Activate</button>
+          <button class="fg-mini good" data-slot-open="${slotNum}" ${event ? "" : "disabled"}>Activate 1 Week</button>
           <button class="fg-mini" data-slot-close="${slotNum}" ${event ? "" : "disabled"}>Disable</button>
           <button class="fg-mini" data-slot-clear="${slotNum}" ${event ? "" : "disabled"}>Clear</button>
           <button class="fg-mini badbtn" data-slot-delete="${slotNum}" ${event ? "" : "disabled"}>Delete</button>
         </div>
       </div>
     `;
+  }
+
+  async function createTestEvent() {
+    try {
+      const startVal = $("#fg-test-start")?.value || "";
+      const endVal = $("#fg-test-end")?.value || "";
+      const start_at = startVal ? Math.floor(new Date(startVal).getTime() / 1000) : null;
+      const end_at = endVal ? Math.floor(new Date(endVal).getTime() / 1000) : null;
+
+      if (!start_at) return alert("Pick test start time.");
+      if (!end_at) return alert("Pick test end time.");
+      if (end_at <= start_at) return alert("End time must be after start time.");
+
+      const payload = {
+        title: $("#fg-test-title")?.value.trim() || "Test Event",
+        prize_label: $("#fg-test-prize")?.value.trim() || "Test Prize",
+        event_prize: $("#fg-test-prize")?.value.trim() || "Test Prize",
+        point_cost: Number($("#fg-test-point-cost")?.value || 1),
+        max_entries_per_player: Number($("#fg-test-max")?.value || 1),
+        base_payout: 0,
+        entry_item_name: "Free Points/Event",
+        entry_item_value: 0,
+        rollover_pool: 0,
+        status: "open",
+        draw_type: "event",
+        start_at,
+        end_at
+      };
+
+      const res = await api("/api/admin/draws", { method: "POST", body: payload });
+      alert("Created test event #" + res.draw_id);
+      await refresh();
+      activeTab = "overview";
+      render();
+    } catch (e) {
+      alert(e.message);
+    }
   }
 
   async function renderEventSlots() {
@@ -894,11 +964,6 @@
   }
 
   function slotPayload(slotNum) {
-    const startInput = $(`#fg-event-${slotNum}-start`)?.value || "";
-    const endInput = $(`#fg-event-${slotNum}-end`)?.value || "";
-    const start_at = startInput ? Math.floor(new Date(startInput).getTime() / 1000) : null;
-    const end_at = endInput ? Math.floor(new Date(endInput).getTime() / 1000) : null;
-
     return {
       title: $(`#fg-event-${slotNum}-title`)?.value.trim() || `Event Slot ${slotNum}`,
       prize_label: $(`#fg-event-${slotNum}-prize`)?.value.trim() || "Event Prize",
@@ -909,10 +974,10 @@
       entry_item_name: "Free Points/Event",
       entry_item_value: 0,
       rollover_pool: 0,
-      status: "open",
+      status: "closed",
       draw_type: "event",
-      start_at,
-      end_at
+      start_at: null,
+      end_at: null
     };
   }
 
@@ -926,20 +991,16 @@
       const payload = slotPayload(slotNum);
       if (!payload.point_cost || payload.point_cost < 1) return alert("Cost must be at least 1 point.");
       if (!payload.max_entries_per_player || payload.max_entries_per_player < 1) return alert("Max entries must be at least 1.");
-      if (!payload.start_at) return alert("Pick a start time.");
-      if (!payload.end_at) return alert("Pick an end time.");
-      if (payload.end_at <= payload.start_at) return alert("End time must be after start time.");
-
       if (drawId) {
         await api("/api/admin/draws/update", { method: "POST", body: { ...payload, draw_id: drawId } });
-        alert("Updated event #" + drawId);
+        alert("Updated event #" + drawId + ". Pending preview refreshed on Overview.");
       } else {
         const res = await api("/api/admin/draws", { method: "POST", body: payload });
-        alert("Created event #" + res.draw_id);
+        alert("Created event #" + res.draw_id + ". It is closed and showing as Pending on Overview.");
       }
 
       await refresh();
-      activeTab = "admin";
+      activeTab = "overview";
       render();
     } catch (e) {
       alert(e.message);
@@ -949,8 +1010,17 @@
   async function setSlotStatus(slotNum, status) {
     const drawId = slotDrawId(slotNum);
     if (!drawId) return alert("No event in this slot.");
-    await setDrawStatus(drawId, status);
+    if (status === "open") {
+      const res = await api("/api/admin/draws/activate", {
+        method: "POST",
+        body: { draw_id: drawId, duration_seconds: 7 * 24 * 60 * 60 }
+      });
+      alert("Event activated for 1 week. Ends: " + fmtTime(res.end_at));
+    } else {
+      await setDrawStatus(drawId, status);
+    }
     await renderEventSlots();
+    await refresh();
   }
 
   async function clearSlot(slotNum) {
@@ -1141,6 +1211,7 @@
     .fg-event-color-3 { background:#14261b; border-color:#55bf78; }
     .fg-event-color-4 { background:#261417; border-color:#d65f73; }
     .fg-winner-line { color:#9affc3 !important; font-weight:900; }
+    .fg-preview-line { color:#ffe49a !important; font-weight:900; }
     .fg-entry-actions { display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:6px; margin-top:8px; }
     .fg-slot-actions { display:grid; grid-template-columns:1fr 1fr 1fr 1fr 1fr; gap:6px; margin-top:8px; }
     .fg-event-slot { margin-top:10px; }
