@@ -133,43 +133,64 @@
     }
   }
 
-  function findNewsTickerMount() {
+  function isVisible(el) {
+    if (!el || !el.isConnected) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 40 && r.height > 8;
+  }
+
+  function findHighlightedPageMount() {
     const selectors = [
-      "#newsTicker",
-      "#news-ticker",
-      ".news-ticker",
-      ".newsTicker",
-      "[class*='newsTicker']",
-      "[class*='news-ticker']",
-      "[id*='newsTicker']",
-      "[id*='news-ticker']",
-      "[class*='ticker']",
-      "[id*='ticker']"
+      "#mainContainer",
+      "#main-container",
+      "#mainContent",
+      "#main-content",
+      "#main-content-wrapper",
+      "#content",
+      ".content-wrapper",
+      ".contentWrapper",
+      ".content",
+      "[class*='content-wrapper']",
+      "[class*='contentWrapper']"
     ];
 
     for (const sel of selectors) {
       const el = $(sel);
-      if (el && el.offsetParent !== null) return el;
+      if (el && !el.closest("#fries-giveaway-panel") && isVisible(el)) return el;
     }
 
-    return $("#header-root") || $("#top-page-links-list") || $("#topHeaderBanner") || document.body.firstElementChild || document.body;
+    const pageTitle = Array.from(document.querySelectorAll("h1,h2,h3,h4,.title,[class*='title']"))
+      .find(el => {
+        if (!isVisible(el) || el.closest("#fries-giveaway-panel") || el.closest("#fries-giveaway-page-slot")) return false;
+        const txt = (el.textContent || "").trim();
+        const r = el.getBoundingClientRect();
+        return txt.length > 0 && txt.length < 40 && r.top > 220;
+      });
+
+    if (pageTitle && pageTitle.parentElement) return pageTitle.parentElement;
+    return document.body;
   }
 
-  function mountButtonUnderNewsTicker() {
+  function mountButtonInHighlightedSpot() {
     const bar = $("#fries-giveaway-topbar");
     if (!bar) return;
 
-    const mount = findNewsTickerMount();
-    if (!mount || mount === bar || bar.parentElement === mount.parentElement && bar.previousElementSibling === mount) return;
+    let slot = $("#fries-giveaway-page-slot");
+    if (!slot) {
+      slot = document.createElement("div");
+      slot.id = "fries-giveaway-page-slot";
+    }
+    if (bar.parentElement !== slot) slot.appendChild(bar);
 
+    const mount = findHighlightedPageMount();
     try {
-      if (mount === document.body || mount.parentElement === document.body && !mount.nextSibling) {
-        document.body.insertBefore(bar, document.body.firstChild);
-      } else {
-        mount.insertAdjacentElement("afterend", bar);
+      if (mount === document.body) {
+        if (slot.parentElement !== document.body) document.body.insertBefore(slot, document.body.firstChild);
+      } else if (mount.firstElementChild !== slot) {
+        mount.insertBefore(slot, mount.firstChild);
       }
     } catch (e) {
-      document.body.insertBefore(bar, document.body.firstChild);
+      if (slot.parentElement !== document.body) document.body.insertBefore(slot, document.body.firstChild);
     }
   }
 
@@ -188,7 +209,7 @@
       bar.addEventListener("click", togglePanel);
     }
 
-    mountButtonUnderNewsTicker();
+    mountButtonInHighlightedSpot();
     updateTopbarJackpot();
     silentTopbarRefresh();
   }
@@ -207,7 +228,6 @@
       </div>
       <div class="fg-tabs">
         <button data-tab="overview">Overview</button>
-        <button data-tab="entry">Entry</button>
         <button data-tab="points">Points</button>
         <button data-tab="rules">Rules</button>
         <button data-tab="winners">Winners</button>
@@ -1396,13 +1416,20 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
 
 
   GM_addStyle(`
+    #fries-giveaway-page-slot {
+      position: relative; z-index: 5; width: 100%; box-sizing: border-box;
+      padding: 5px 8px; margin: 0 0 4px;
+      background: linear-gradient(90deg, rgba(72,7,14,.96), rgba(105,12,22,.92), rgba(72,7,14,.96));
+      border-top: 1px solid rgba(255,255,255,.08); border-bottom: 1px solid rgba(0,0,0,.55);
+      display: flex; align-items: center; justify-content: flex-start;
+    }
     #fries-giveaway-topbar {
-      position: relative; z-index: 20;
-      min-height: 30px; width: calc(100% - 12px); border: 1px solid rgba(255,255,255,.14);
-      border-radius: 10px; margin: 4px 6px 6px;
-      background: linear-gradient(90deg,#18111f,#321d50,#18111f);
-      color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center;
-      gap: 8px; padding: 5px 10px; box-shadow: 0 3px 10px rgba(0,0,0,.24);
+      position: relative; z-index: 6;
+      min-height: 30px; max-width: 100%; border: 1px solid rgba(255,255,255,.16);
+      border-radius: 999px; margin: 0;
+      background: linear-gradient(90deg,#17131d,#2b1b44,#17131d);
+      color: #fff; cursor: pointer; display: inline-flex; align-items: center; justify-content: flex-start;
+      gap: 7px; padding: 4px 10px 4px 5px; box-shadow: 0 2px 8px rgba(0,0,0,.35);
       font-family: Arial, sans-serif; overflow: hidden; box-sizing: border-box;
     }
     .fg-top-icon { width: 22px; height: 22px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; background: radial-gradient(circle at 35% 20%,#ffeaa5,#b77414 60%,#6b3a08); color: #1b1205; font-size: 14px; flex: 0 0 auto; }
@@ -1461,7 +1488,8 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     .fg-status-pending { background:#5a4315; color:#ffe49a; }
     .fg-status-rejected { background:#5a1717; color:#ff9a9a; }
     @media (max-width: 520px) {
-      #fries-giveaway-topbar { min-height: 30px; padding: 5px 7px; gap: 6px; margin: 4px 5px 6px; width: calc(100% - 10px); }
+      #fries-giveaway-page-slot { padding: 5px 7px; margin: 0 0 4px; }
+      #fries-giveaway-topbar { min-height: 28px; padding: 4px 8px 4px 5px; gap: 6px; max-width: 100%; }
       .fg-top-text { font-size: 11px; }
       .fg-top-marquee { font-size: 10px; max-width: 52vw; }
       #fries-giveaway-panel { right: 8px; left: 8px; width: auto; top: 70px; max-height: calc(100vh - 82px); }
@@ -1478,4 +1506,12 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
   `);
 
   ensureButton();
+  setInterval(() => {
+    ensureButton();
+  }, 2500);
+  try {
+    new MutationObserver(() => {
+      if (!document.hidden) ensureButton();
+    }).observe(document.body, { childList: true, subtree: true });
+  } catch (e) {}
 })();
