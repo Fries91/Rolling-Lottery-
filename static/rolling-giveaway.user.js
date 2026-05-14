@@ -72,13 +72,10 @@
     const c = conversion || {};
     const base = Math.max(1, Number(c.base_value || 850000));
     const items = c.items || [];
-    if (!items.length) {
-      return `<div class="fg-muted">No point conversion items set yet.</div>`;
-    }
+    if (!items.length) return `<div class="fg-muted">No conversion items set.</div>`;
     return `
-      <div class="fg-muted">1 point = ${money(base)} value. Item values are rounded down.</div>
-      <table class="fg-point-table">
-        <thead><tr><th>Item</th><th>Value</th><th>Points</th></tr></thead>
+      <div class="fg-chipline"><span>Base: ${money(base)} = 1 pt</span><span>Rounded down</span></div>
+      <table class="fg-point-table compact">
         <tbody>
           ${items.map(item => `
             <tr>
@@ -90,6 +87,18 @@
         </tbody>
       </table>
     `;
+  }
+
+  function pointRequestOptionsHtml(conversion) {
+    const items = (conversion?.items || []).filter(i => i.name && Number(i.value) > 0);
+    return items.length
+      ? items.map(i => `<option value="${esc(i.name)}" data-value="${esc(i.value)}" data-points="${esc(i.points || 0)}">${esc(i.name)} — ${money(i.value)}</option>`).join("")
+      : `<option value="">No items set</option>`;
+  }
+
+  function calcItemPoints(conversion, itemValue, qty) {
+    const base = Math.max(1, Number(conversion?.base_value || 850000));
+    return Math.floor((Number(itemValue || 0) * Number(qty || 0)) / base);
   }
 
   function drawDate(ts) {
@@ -158,7 +167,7 @@
       <div class="fg-head">
         <div>
           <div class="fg-title">🎁 Fries91's Giveaway</div>
-          <div class="fg-sub">Rolling jackpot • Admin approval required</div>
+          <div class="fg-sub">Giveaway • Points • Events</div>
         </div>
         <button class="fg-close">×</button>
       </div>
@@ -209,6 +218,7 @@
     const adminTab = $(".fg-admin-tab", panel);
     if (adminTab) adminTab.style.display = isAdmin() ? "" : "none";
     if (activeTab === "admin" && !isAdmin()) activeTab = "overview";
+    if (activeTab === "entry") activeTab = "overview";
     panel.querySelectorAll("[data-tab]").forEach(btn => btn.classList.toggle("active", btn.dataset.tab === activeTab));
   }
 
@@ -294,6 +304,7 @@
   async function renderEventOverviewBoxes() {
     try {
       const res = await api("/api/draws");
+      const conv = await api("/api/point-conversions").catch(() => ({ conversion: null }));
       const box = $("#fg-event-overview-boxes");
       if (!box) return;
 
@@ -304,70 +315,79 @@
         .filter(d => d.status !== "drawn" && d.status !== "deleted")
         .filter(d => d.status === "closed" || !d.end_at || Number(d.end_at) > nowSec)
         .slice(0, 5);
+
       if (!events.length) {
-        box.innerHTML = "";
+        box.innerHTML = `<div class="fg-card fg-compact"><b>No events open</b><span>Check back soon.</span></div>`;
         return;
       }
 
       box.innerHTML = `
-        <div class="fg-section-title">Other Events</div>
-        ${events.map((d, idx) => `
-          <div class="fg-card fg-event-card fg-event-color-${idx % 5}">
-            <b>#${esc(d.id)} — ${esc(d.title)}</b>
-            <span>Prize: ${esc(d.event_prize || d.prize_label || "Prize")}</span>
-            <span>Cost: ${esc(d.point_cost || 1)} point(s)</span>
-            <span>Max per player: ${esc(d.max_entries_per_player || 1)}</span>
-            <span>Starts: ${esc(fmtTime(d.start_at))}</span>
-            <span>Ends: ${esc(fmtTime(d.end_at))} • ${esc(countdownText(d.end_at))}</span>
-            <span>Entered: ${esc(d.total_entry_count || d.entry_count || 0)}</span>
-            ${d.status === "closed" ? `<span class="fg-preview-line">Pending</span>` : ""}
-            <span>Status: ${d.status === "closed" ? "Pending" : esc(d.status)}</span>
-            ${d.winner_name ? `<span class="fg-winner-line">Winner: ${esc(d.winner_name)} [${esc(d.winner_player_id)}] — Admin send reward</span>` : ""}
-            ${d.status === "open" && !d.winner_name ? `
-              <div class="fg-overview-entry-box">
-                <label>Points to use for this event</label>
-                <input class="fg-input fg-overview-entry-points" data-draw-id="${esc(d.id)}" type="number" min="${esc(d.point_cost || 1)}" max="${esc(d.max_entries_per_player || 1)}" value="${esc(d.point_cost || 1)}">
-                <p class="fg-muted">Minimum: ${esc(d.point_cost || 1)} point(s). Max: ${esc(d.max_entries_per_player || 1)} point(s). Points are deducted when you enter.</p>
-                <button class="fg-primary fg-overview-enter-btn" data-draw-id="${esc(d.id)}" data-title="${esc(d.title)}">Enter This Event</button>
+        <div class="fg-section-title">Events</div>
+        ${events.map((d, idx) => {
+          const open = d.status === "open";
+          const min = Number(d.point_cost || 1);
+          const max = Number(d.max_entries_per_player || 1);
+          return `
+            <div class="fg-card fg-event-card fg-event-color-${idx % 5}">
+              <div class="fg-event-head">
+                <b>#${esc(d.id)} ${esc(d.title)}</b>
+                ${statusPill(d.status === "closed" ? "pending" : d.status)}
               </div>
-            ` : ""}
-          </div>
-        `).join("")}
+              <div class="fg-chipline">
+                <span>Prize: ${esc(d.event_prize || d.prize_label || "Prize")}</span>
+                <span>Cost: ${min}+</span>
+                <span>Max: ${max}</span>
+                <span>Ends: ${esc(countdownText(d.end_at))}</span>
+                <span>Entries: ${esc(d.total_entry_count || d.entry_count || 0)}</span>
+              </div>
+              ${d.winner_name ? `<div class="fg-winner-line">Winner: ${esc(d.winner_name)} [${esc(d.winner_player_id)}]</div>` : ""}
+              ${open ? `
+                <div class="fg-inline-enter">
+                  <input class="fg-input fg-event-points" id="fg-event-points-${esc(d.id)}" type="number" min="${min}" max="${max}" value="${min}" inputmode="numeric">
+                  <button class="fg-primary fg-enter-event" data-draw-id="${esc(d.id)}" data-min="${min}" data-max="${max}">Enter</button>
+                </div>
+              ` : `<div class="fg-muted">Pending</div>`}
+            </div>
+          `;
+        }).join("")}
+        <div class="fg-card fg-compact">
+          <b>Item Values</b>
+          ${pointRowsHtml(conv.conversion)}
+        </div>
       `;
-      attachOverviewEntryHandlers();
+
+      box.querySelectorAll(".fg-enter-event").forEach(btn => {
+        btn.addEventListener("click", () => enterOverviewDraw(btn));
+      });
     } catch (e) {
-      // silent overview failure
+      const box = $("#fg-event-overview-boxes");
+      if (box) box.innerHTML = `<div class="fg-card bad"><b>Events failed</b><span>${esc(e.message)}</span></div>`;
     }
   }
 
-  function attachOverviewEntryHandlers() {
-    document.querySelectorAll(".fg-overview-enter-btn").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        if (!user) {
-          alert("Login from the Rules tab before entering events.");
-          activeTab = "rules";
-          render();
-          return;
-        }
-        const drawId = Number(btn.dataset.drawId || 0);
-        const title = btn.dataset.title || "this event";
-        const input = document.querySelector(`.fg-overview-entry-points[data-draw-id="${drawId}"]`);
-        const pointsSpent = Number(input?.value || 0);
-        if (!drawId) return alert("Could not read event ID.");
-        if (pointsSpent <= 0) return alert("Enter at least 1 point.");
-        try {
-          btn.disabled = true;
-          btn.textContent = "Entering...";
-          await api("/api/enter", { method: "POST", body: { draw_id: drawId, points_spent: pointsSpent } });
-          alert(`Entered ${title} with ${pointsSpent} point(s).`);
-          await refresh();
-        } catch (e) {
-          alert(e.message);
-          btn.disabled = false;
-          btn.textContent = "Enter This Event";
-        }
-      });
-    });
+  async function enterOverviewDraw(btn) {
+    try {
+      if (!user) {
+        activeTab = "rules";
+        render();
+        return alert("Login first.");
+      }
+      const drawId = Number(btn.dataset.drawId || 0);
+      const min = Number(btn.dataset.min || 1);
+      const max = Number(btn.dataset.max || 1);
+      const input = $(`#fg-event-points-${drawId}`);
+      const pointsSpent = Number(input?.value || 0);
+      if (!drawId) return alert("Missing event.");
+      if (pointsSpent < min) return alert(`Minimum is ${min} point(s).`);
+      if (pointsSpent > max) return alert(`Max is ${max} point(s).`);
+      btn.disabled = true;
+      btn.textContent = "Entering...";
+      await api("/api/enter", { method: "POST", body: { draw_id: drawId, points_spent: pointsSpent } });
+      await refresh();
+    } catch (e) {
+      alert(e.message);
+      if (btn) { btn.disabled = false; btn.textContent = "Enter"; }
+    }
   }
 
   function renderEntry() {
@@ -448,33 +468,28 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
       const res = await api("/api/points");
       const p = res.points || {};
       $(".fg-body").innerHTML = `
-        <div class="fg-hero">
-          <div class="fg-kicker">FREE POINTS</div>
+        <div class="fg-hero compact-hero">
+          <div class="fg-kicker">POINTS</div>
           <h2>${esc(user.name)} [${esc(user.player_id)}]</h2>
           <div class="fg-big">${Number(p.balance || 0).toLocaleString()} pts</div>
-          <div class="fg-muted">Points are free credits. They cannot be bought, sold, traded, or exchanged.</div>
         </div>
 
-        <div class="fg-card">
-          <b>Item → Points Conversion</b>
-          <p class="fg-muted">Use this table to see how many points each accepted item is worth.</p>
+        <div class="fg-card fg-compact">
+          <b>Item Values</b>
           ${pointRowsHtml(res.conversion)}
         </div>
 
-        <div class="fg-card">
-          <b>Daily Free Claim</b>
-          <p>${res.claimed_today ? "You already claimed today's free point." : "Claim 1 free point today."}</p>
-          <button class="fg-primary" id="fg-claim-daily" ${res.claimed_today ? "disabled" : ""}>${res.claimed_today ? "Claimed Today" : "Claim 1 Free Point"}</button>
+        <div class="fg-card fg-compact">
+          <b>Daily Claim</b>
+          <button class="fg-primary" id="fg-claim-daily" ${res.claimed_today ? "disabled" : ""}>${res.claimed_today ? "Claimed" : "+1 Point"}</button>
         </div>
 
-        <div class="fg-card">
+        <div class="fg-card fg-compact">
           <b>Request Points</b>
-          <p class="fg-muted">Ask admin for free points. Admin approval is required before points are added.</p>
-          <label>Amount Requested</label>
-          <input class="fg-input" id="fg-request-points-amount" type="number" min="1" placeholder="Example: 10">
-          <label>Reason</label>
-          <input class="fg-input" id="fg-request-points-reason" placeholder="Example: event participation">
-          <button class="fg-primary" id="fg-request-points-submit">Send Point Request</button>
+          <select class="fg-input" id="fg-request-item">${pointRequestOptionsHtml(res.conversion)}</select>
+          <input class="fg-input" id="fg-request-item-qty" type="number" min="1" value="1" inputmode="numeric" placeholder="How many">
+          <div id="fg-request-preview" class="fg-mini-preview"></div>
+          <button class="fg-primary" id="fg-request-points-submit">Send Request</button>
           <button class="fg-secondary" id="fg-load-my-point-requests">My Requests</button>
           <div id="fg-my-point-requests"></div>
         </div>
@@ -502,6 +517,10 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
         }
       });
 
+      window.__fgLastConversion = res.conversion || null;
+      updatePointRequestPreview();
+      $("#fg-request-item")?.addEventListener("change", updatePointRequestPreview);
+      $("#fg-request-item-qty")?.addEventListener("input", updatePointRequestPreview);
       $("#fg-request-points-submit")?.addEventListener("click", submitPointRequest);
       $("#fg-load-my-point-requests")?.addEventListener("click", loadMyPointRequests);
     } catch (e) {
@@ -530,23 +549,43 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     }
   }
 
+  function updatePointRequestPreview() {
+    const sel = $("#fg-request-item");
+    const qty = Math.max(1, Number($("#fg-request-item-qty")?.value || 1));
+    const box = $("#fg-request-preview");
+    if (!sel || !box) return;
+    const opt = sel.selectedOptions && sel.selectedOptions[0];
+    const itemName = opt?.value || "";
+    const itemValue = Number(opt?.dataset?.value || 0);
+    const points = calcItemPoints(window.__fgLastConversion, itemValue, qty);
+    const total = itemValue * qty;
+    if (!itemName || !itemValue) {
+      box.innerHTML = `<span class="fg-muted">Set item values first.</span>`;
+      return;
+    }
+    box.innerHTML = `<div class="fg-chipline"><span>${qty} × ${esc(itemName)}</span><span>${money(total)}</span><span><b>${points} pts</b></span></div>`;
+  }
+
   async function submitPointRequest() {
     try {
-      const amount = Number($("#fg-request-points-amount")?.value || 0);
-      const reason = $("#fg-request-points-reason")?.value.trim() || "";
-      if (!amount || amount <= 0) return alert("Enter a point amount.");
-
-      await api("/api/points/request", {
-        method: "POST",
-        body: { amount, reason }
-      });
-
-      alert("Point request sent to admin for approval.");
+      const sel = $("#fg-request-item");
+      const opt = sel?.selectedOptions && sel.selectedOptions[0];
+      const itemName = opt?.value || "";
+      const itemValue = Number(opt?.dataset?.value || 0);
+      const qty = Math.max(1, Number($("#fg-request-item-qty")?.value || 1));
+      const total = itemValue * qty;
+      const amount = calcItemPoints(window.__fgLastConversion, itemValue, qty);
+      if (!itemName || !itemValue) return alert("Pick an item first.");
+      if (amount <= 0) return alert("That converts to 0 points.");
+      const reason = `${qty} × ${itemName} @ ${money(itemValue)} each = ${money(total)} → ${amount} pts`;
+      await api("/api/points/request", { method: "POST", body: { amount, reason } });
+      alert("Point request sent.");
       await loadMyPointRequests();
     } catch (e) {
       alert(e.message);
     }
   }
+
 
   async function loadMyPointRequests() {
     try {
@@ -567,39 +606,21 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     setTabClasses();
     const savedKey = localStorage.getItem(KEY_KEY) || "";
     $(".fg-body").innerHTML = `
-      <div class="fg-hero">
-        <div class="fg-kicker">RULES & LOGIN</div>
+      <div class="fg-hero compact-hero">
+        <div class="fg-kicker">RULES</div>
         <h2>Fries91's Giveaway</h2>
-        <div class="fg-muted">Read the rules, terms, and API key use before logging in.</div>
       </div>
 
-      <div class="fg-card">
-        <b>Rules</b>
-        <p>This giveaway app uses free/admin-granted points for event entries. Entries use points from your balance. Event entries are final once submitted. Closing, clearing, or ending an event does not refund spent points.</p>
-        <p>Admins can create event draws, activate or disable them, review point requests, and send rewards to winners after the app chooses a winner.</p>
-        <p>Users are responsible for checking event cost, max entries, and prize details before entering.</p>
-      </div>
+      <div class="fg-card fg-compact"><b>Rules</b><div class="fg-chipline"><span>Use points to enter</span><span>No refunds after entry</span><span>Admin sends prizes</span></div></div>
+      <div class="fg-card fg-compact"><b>ToS</b><div class="fg-muted">Player-made Torn helper. Stores Torn ID/name, points, requests, entries, and winners.</div></div>
+      <div class="fg-card fg-compact"><b>API Key</b><div class="fg-muted">Used for login only. Password is never needed. Limited key recommended.</div></div>
 
-      <div class="fg-card">
-        <b>Terms of Service</b>
-        <p>By using this app, you understand this is a player-made Torn helper and not an official Torn feature. Rewards are handled manually by the admin. The app records your Torn name, Torn ID, point balance, entries, point requests, and winner history for this giveaway system.</p>
-        <p>Do not abuse the app, spam point requests, try to bypass limits, or use another player's API key. Admin may remove points, disable events, clear events, or reject point requests when needed.</p>
-      </div>
-
-      <div class="fg-card">
-        <b>API Key Use & Torn Rules</b>
-        <p>Your API key is used only to confirm your Torn identity, name, and player ID during login. The app does not need your password and should never ask for it.</p>
-        <p>The key is stored locally in your browser/PDA storage so you do not need to paste it every time. The input is masked when typed. Use a limited Torn API key where possible.</p>
-        <p>This app is designed to follow Torn's expectations by using the API for identity/login and app data only, not for automation that plays the game for you. You can remove the saved key from your browser/PDA storage by clearing site/script data.</p>
-      </div>
-
-      <div class="fg-card private">
-        <b>API Key Login</b>
-        ${user ? `<p class="fg-muted">Logged in as ${esc(user.name)} [${esc(user.player_id)}]${user.is_admin ? " • Admin" : ""}</p>` : `<p class="fg-muted">Not logged in.</p>`}
-        <label>Torn API Key</label>
-        <input class="fg-input" id="fg-rules-api-key" type="password" autocomplete="off" placeholder="Paste Torn API key" value="${esc(savedKey)}">
-        <button class="fg-primary" id="fg-rules-login">Login / Save Key</button>
-        <button class="fg-secondary" id="fg-rules-clear-key">Clear Saved Key</button>
+      <div class="fg-card private fg-compact">
+        <b>Login</b>
+        ${user ? `<div class="fg-chipline"><span>${esc(user.name)} [${esc(user.player_id)}]</span>${user.is_admin ? "<span>Admin</span>" : ""}</div>` : `<div class="fg-muted">Not logged in.</div>`}
+        <input class="fg-input" id="fg-rules-api-key" type="password" autocomplete="off" placeholder="Torn API key" value="${esc(savedKey)}">
+        <button class="fg-primary" id="fg-rules-login">Login / Save</button>
+        <button class="fg-secondary" id="fg-rules-clear-key">Clear Key</button>
       </div>
     `;
 
@@ -621,7 +642,7 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
       localStorage.removeItem(KEY_KEY);
       localStorage.removeItem(LS_KEY);
       user = null;
-      alert("Saved API key/session cleared from this browser.");
+      alert("Saved API key/session cleared.");
       render();
     });
   }
@@ -714,7 +735,7 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
 
       <div class="fg-card private">
         <b>Point Conversion Items</b>
-        <p class="fg-muted">Add up to 5 accepted items. Points use item value ÷ base point value, rounded down.</p>
+        <p class="fg-muted">Edit values anytime. Points round down.</p>
         <label>Base Value Per 1 Point</label>
         <input class="fg-input" id="fg-point-base-value" type="number" min="1" value="850000">
         <div class="fg-point-admin-grid">
@@ -770,13 +791,13 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
 
       <div class="fg-card private">
         <b>Other Events / Draws</b>
-        <p class="fg-muted">5 event slots. Create saves a pending preview on Overview. Activate opens it for 1 week. Use Test Event below for custom start/end.</p>
+        <p class="fg-muted">5 event slots. Create = pending. Activate = 1 week.</p>
         <button class="fg-secondary" id="fg-load-draws">Refresh Event Slots</button>
         <div id="fg-event-slots"></div>
 
         <div class="fg-card fg-event-slot" id="fg-test-event-box">
           <b>Test Event</b>
-          <p class="fg-muted">Use this to test start/end countdown and auto winner quickly.</p>
+          <p class="fg-muted">Quick test draw.</p>
           <label>Test Event Title</label>
           <input class="fg-input" id="fg-test-title" value="Test Event">
           <label>Prize</label>
@@ -1443,10 +1464,6 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     .fg-winner-line { color:#9affc3 !important; font-weight:900; }
     .fg-preview-line { color:#ffe49a !important; font-weight:900; }
     .fg-entry-actions { display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:6px; margin-top:8px; }
-
-    .fg-overview-entry-box { margin-top:10px; padding:10px; border-radius:12px; border:1px solid rgba(255,255,255,.12); background:rgba(0,0,0,.18); }
-    .fg-overview-entry-box label { display:block; margin-bottom:6px; font-weight:800; color:#fff; }
-    .fg-overview-entry-box .fg-primary { margin-top:8px; }
     .fg-slot-actions { display:grid; grid-template-columns:1fr 1fr 1fr 1fr 1fr; gap:6px; margin-top:8px; }
     .fg-event-slot { margin-top:10px; }
     .fg-mini { padding:7px; border:0; border-radius:9px; background:#2f3447; color:white; font-weight:800; }
@@ -1472,6 +1489,26 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     .fg-point-table th, .fg-point-table td { text-align: left; padding: 8px; border-bottom: 1px solid rgba(255,255,255,.10); }
     .fg-point-table th { font-size: 11px; text-transform: uppercase; color: #d8cdf1; background: rgba(255,255,255,.06); }
     @media (max-width: 560px) { .fg-point-admin-row { grid-template-columns: 1fr; } .fg-point-table th, .fg-point-table td { padding: 7px 5px; font-size: 12px; } }
+
+    /* compact / smoother PDA layout */
+    .compact-hero { padding: 12px 14px; }
+    .compact-hero h2 { margin: 4px 0; font-size: 18px; }
+    .compact-hero .fg-big { font-size: 28px; }
+    .fg-compact { padding: 10px; margin-bottom: 8px; }
+    .fg-compact p { margin: 4px 0; }
+    .fg-chipline { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+    .fg-chipline span { display:inline-flex; align-items:center; width:auto; padding:4px 7px; border-radius:999px; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.09); font-size:12px; color:#f4f2ff; }
+    .fg-event-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .fg-event-head b { margin:0; }
+    .fg-inline-enter { display:grid; grid-template-columns: 1fr 90px; gap:8px; align-items:center; margin-top:9px; }
+    .fg-inline-enter .fg-input, .fg-inline-enter .fg-primary { margin:0; }
+    .fg-point-table.compact { margin-top:6px; }
+    .fg-point-table.compact td { padding:6px 5px; font-size:12px; }
+    .fg-point-table.compact td:nth-child(2), .fg-point-table.compact td:nth-child(3) { text-align:right; white-space:nowrap; }
+    .fg-body { padding: 10px; }
+    .fg-card b { margin-bottom:4px; }
+    .fg-card span { font-size:13px; }
+    @media (max-width: 520px) { .fg-tabs { gap:4px; padding:7px; } .fg-tabs button { padding:7px 5px; font-size:12px; } .fg-inline-enter { grid-template-columns:1fr 78px; } }
   `);
 
   ensureButton();
