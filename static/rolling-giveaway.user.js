@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.36
-// @description  Free-entry rolling giveaway overlay for Torn. Compact PDA-safe page-header launcher.
+// @version      1.0.37
+// @description  Free-entry rolling giveaway overlay for Torn. Compact PDA-safe page-header launcher with cleaner tabs and tables.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @match        https://*.torn.com/*
@@ -76,15 +76,14 @@
       return `<div class="fg-muted">No point conversion items set yet.</div>`;
     }
     return `
-      <div class="fg-muted">1 point = ${money(base)} value. Item values are rounded down.</div>
       <table class="fg-point-table">
         <thead><tr><th>Item</th><th>Value</th><th>Points</th></tr></thead>
         <tbody>
           ${items.map(item => `
             <tr>
-              <td>${esc(item.name)}</td>
-              <td>${money(item.value)}</td>
-              <td><b>${Number(item.points || 0).toLocaleString()} pts</b></td>
+              <td class="fg-point-name">${esc(item.name)}</td>
+              <td class="fg-point-value">${money(item.value)}</td>
+              <td class="fg-point-points"><b>${Number(item.points || 0).toLocaleString()} pts</b></td>
             </tr>
           `).join("")}
         </tbody>
@@ -475,16 +474,13 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
       const res = await api("/api/points");
       const p = res.points || {};
       $(".fg-body").innerHTML = `
-        <div class="fg-hero">
-          <div class="fg-kicker">FREE POINTS</div>
+        <div class="fg-hero fg-balance-hero">
           <h2>${esc(user.name)} [${esc(user.player_id)}]</h2>
           <div class="fg-big">${Number(p.balance || 0).toLocaleString()} pts</div>
-          <div class="fg-muted">Points are free credits. They cannot be bought, sold, traded, or exchanged.</div>
         </div>
 
-        <div class="fg-card">
-          <b>Item → Points Conversion</b>
-          <p class="fg-muted">Use this table to see how many points each accepted item is worth.</p>
+        <div class="fg-card fg-compact-card">
+          <b>Item → Points</b>
           ${pointRowsHtml(res.conversion)}
         </div>
 
@@ -506,8 +502,8 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
           <div id="fg-my-point-requests"></div>
         </div>
 
-        <div class="fg-card">
-          <b>Point History</b>
+        <details class="fg-card fg-collapse">
+          <summary>Point History</summary>
           <div id="fg-point-history">
             ${
               (res.ledger || []).length
@@ -515,7 +511,7 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
                 : `<div class="fg-muted">No point history yet.</div>`
             }
           </div>
-        </div>
+        </details>
       `;
 
       $("#fg-claim-daily")?.addEventListener("click", async () => {
@@ -741,7 +737,6 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
 
       <div class="fg-card private">
         <b>Point Conversion Items</b>
-        <p class="fg-muted">Add up to 5 accepted items. Points use item value ÷ base point value, rounded down.</p>
         <label>Base Value Per 1 Point</label>
         <input class="fg-input" id="fg-point-base-value" type="number" min="1" value="850000">
         <div class="fg-point-admin-grid">
@@ -1453,22 +1448,22 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     .fg-top-marquee { color: #d9d1f5 !important; font-size: 12px !important; white-space: nowrap !important; opacity: .95 !important; overflow: hidden !important; text-overflow: ellipsis !important; }
     #fries-giveaway-panel { position: fixed; right: 12px; top: 74px; z-index: 999999; width: min(430px, calc(100vw - 24px)); max-height: calc(100vh - 86px); display: none; overflow: hidden; border-radius: 18px; background: #11131a; color: #f4f2ff; border: 1px solid rgba(255,255,255,.16); box-shadow: 0 18px 60px rgba(0,0,0,.55); font-family: Arial, sans-serif; }
     #fries-giveaway-panel.open { display: block; }
-    .fg-head { display:flex; align-items:center; justify-content:space-between; padding: 14px; background: linear-gradient(135deg,#1b102b,#301a50); }
-    .fg-title { font-weight: 800; font-size: 18px; }
+    .fg-head { display:flex; align-items:center; justify-content:space-between; padding: 12px 14px; background: linear-gradient(135deg,#1b102b,#301a50); }
+    .fg-title { font-weight: 800; font-size: 18px; line-height: 1.05; }
     .fg-sub, .fg-muted { color: #c8c0dc; font-size: 12px; }
     .fg-close { background: transparent; color: white; border: 0; font-size: 28px; cursor:pointer; }
-    .fg-tabs { display:flex; gap: 6px; padding: 10px; background:#151722; border-bottom:1px solid rgba(255,255,255,.1); }
-    .fg-tabs button { flex:1; padding: 9px 8px; border-radius: 10px; border:1px solid rgba(255,255,255,.12); background:#202333; color:#e9e3ff; cursor:pointer; }
+    .fg-tabs { display:flex; gap: 6px; padding: 9px; background:#151722; border-bottom:1px solid rgba(255,255,255,.1); overflow-x:auto; scrollbar-width:none; }
+    .fg-tabs button { flex:1 0 auto; min-width:72px; padding: 9px 8px; border-radius: 10px; border:1px solid rgba(255,255,255,.12); background:#202333; color:#e9e3ff; cursor:pointer; white-space:nowrap; }
     .fg-tabs button.active { background:#6b38b6; border-color:#9c6cff; }
     .fg-body { padding: 12px; overflow:auto; max-height: calc(100vh - 180px); }
-    .fg-hero { padding:18px; border-radius:18px; background: radial-gradient(circle at top left,#7143bd,#21152f 55%); border:1px solid rgba(255,255,255,.16); margin-bottom: 10px; }
-    .fg-kicker { font-size:11px; letter-spacing:.1em; color:#d7c6ff; }
-    .fg-hero h2 { margin: 8px 0; font-size: 22px; }
-    .fg-big { font-size: 32px; font-weight: 900; }
+    .fg-hero { padding:16px; border-radius:18px; background: radial-gradient(circle at top left,#7143bd,#21152f 55%); border:1px solid rgba(255,255,255,.16); margin-bottom: 10px; overflow:hidden; }
+    .fg-kicker { display:block; font-size:10px; letter-spacing:.08em; color:#d7c6ff; line-height:1; margin:0 0 5px; }
+    .fg-hero h2 { margin: 0 0 8px; font-size: 22px; line-height:1.08; word-break:break-word; }
+    .fg-big { font-size: 32px; font-weight: 900; line-height:1.05; }
     .fg-subline { margin-top:6px; font-size:16px; font-weight:800; color:#f4f2ff; }
     .fg-subline.small { font-size:13px; color:#c8c0dc; }
     .fg-grid { display:grid; grid-template-columns:1fr 1fr; gap: 10px; }
-    .fg-card { background:#191c28; border:1px solid rgba(255,255,255,.12); border-radius:16px; padding:12px; margin-bottom:10px; }
+    .fg-card { background:#191c28; border:1px solid rgba(255,255,255,.12); border-radius:16px; padding:12px; margin-bottom:10px; color:#f4f2ff; }
     .fg-card b { display:block; margin-bottom:6px; }
     .fg-card span { display:block; font-size:14px; color:#f4f2ff; }
     .fg-card.private { border-color: rgba(255,210,90,.5); background: #251f14; }
@@ -1508,6 +1503,8 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
       #fries-giveaway-topbar { min-height: 34px !important; padding: 6px 8px !important; gap: 7px !important; max-width: 100% !important; }
       .fg-top-text { font-size: 11px; }
       .fg-top-marquee { font-size: 10px; max-width: 52vw; }
+      .fg-tabs { gap:5px; padding:8px; }
+      .fg-tabs button { min-width:64px; padding:8px 7px; font-size:13px; }
       #fries-giveaway-panel { right: 8px; left: 8px; width: auto; top: 70px; max-height: calc(100vh - 82px); }
       .fg-grid { grid-template-columns:1fr; }
     }
@@ -1515,10 +1512,27 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     .fg-point-admin-grid { display: grid; gap: 8px; margin: 8px 0; }
     .fg-point-admin-row { display: grid; grid-template-columns: 1fr 150px; gap: 8px; }
     .fg-mini-preview { margin-top: 10px; padding: 10px; border-radius: 14px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.12); }
-    .fg-point-table { width: 100%; border-collapse: collapse; margin-top: 8px; overflow: hidden; border-radius: 12px; }
-    .fg-point-table th, .fg-point-table td { text-align: left; padding: 8px; border-bottom: 1px solid rgba(255,255,255,.10); }
-    .fg-point-table th { font-size: 11px; text-transform: uppercase; color: #d8cdf1; background: rgba(255,255,255,.06); }
-    @media (max-width: 560px) { .fg-point-admin-row { grid-template-columns: 1fr; } .fg-point-table th, .fg-point-table td { padding: 7px 5px; font-size: 12px; } }
+    .fg-point-table { width: 100%; border-collapse: separate; border-spacing: 0; margin-top: 6px; overflow: hidden; border-radius: 12px; background:#0f121b; border:1px solid rgba(255,255,255,.14); }
+    .fg-point-table th, .fg-point-table td { text-align: left; padding: 8px; border-bottom: 1px solid rgba(255,255,255,.10); color:#f7f3ff; }
+    .fg-point-table th { font-size: 11px; text-transform: uppercase; color: #ffe9a8; background: rgba(255,255,255,.09); }
+    .fg-point-table tr:last-child td { border-bottom:0; }
+    .fg-point-name { color:#ffffff !important; font-weight:800; }
+    .fg-point-value { color:#dcd5ff !important; }
+    .fg-point-points { color:#a8ffc9 !important; font-weight:900; white-space:nowrap; }
+    .fg-compact-card b { margin-bottom: 8px; }
+    .fg-collapse { padding:0; overflow:hidden; }
+    .fg-collapse summary { cursor:pointer; list-style:none; padding:12px; font-weight:900; color:#fff; background:#202333; border-radius:16px; }
+    .fg-collapse summary::-webkit-details-marker { display:none; }
+    .fg-collapse summary:after { content:'▼'; float:right; color:#d8cdf1; font-size:12px; margin-top:3px; }
+    .fg-collapse[open] summary:after { content:'▲'; }
+    .fg-collapse #fg-point-history { padding: 10px 12px 12px; }
+    @media (max-width: 560px) {
+      .fg-point-admin-row { grid-template-columns: 1fr; }
+      .fg-point-table th, .fg-point-table td { padding: 7px 5px; font-size: 12px; }
+      .fg-hero { padding:14px; }
+      .fg-hero h2 { font-size:20px; }
+      .fg-big { font-size:30px; }
+    }
   `);
 
   /* PDA-safe startup: mount the Torn page-header launcher with limited retries only.
