@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.32
+// @version      1.0.33
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -136,39 +136,48 @@
   function isVisible(el) {
     if (!el || !el.isConnected) return false;
     const r = el.getBoundingClientRect();
-    return r.width > 40 && r.height > 8;
+    return r.width > 40 && r.height > 8 && r.bottom > 0 && r.top < window.innerHeight;
   }
 
-  function findHighlightedPageMount() {
-    const selectors = [
-      "#mainContainer",
-      "#main-container",
-      "#mainContent",
-      "#main-content",
-      "#main-content-wrapper",
-      "#content",
-      ".content-wrapper",
-      ".contentWrapper",
-      ".content",
-      "[class*='content-wrapper']",
-      "[class*='contentWrapper']"
-    ];
+  function computeLauncherTop() {
+    // PDA/Torn changes its header a lot. This finds the bottom of the visible
+    // Torn top area and puts the giveaway strip right under it, where you highlighted.
+    const ignore = (el) => el.closest && (el.closest("#fries-giveaway-page-slot") || el.closest("#fries-giveaway-panel"));
+    let bottom = 0;
 
-    for (const sel of selectors) {
-      const el = $(sel);
-      if (el && !el.closest("#fries-giveaway-panel") && isVisible(el)) return el;
+    const likelyTopBars = Array.from(document.querySelectorAll(`
+      #topbar, #header-root, #header, header,
+      [class*="top"], [class*="header"], [class*="Header"],
+      [class*="status"], [class*="Status"],
+      [class*="nav"], [class*="Nav"],
+      [class*="bar"], [class*="Bar"],
+      [class*="ticker"], [class*="Ticker"]
+    `));
+
+    for (const el of likelyTopBars) {
+      if (!isVisible(el) || ignore(el)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < Math.min(280, window.innerWidth * 0.55)) continue;
+      if (r.top < window.innerHeight * 0.48 && r.bottom > bottom) bottom = r.bottom;
     }
 
-    const pageTitle = Array.from(document.querySelectorAll("h1,h2,h3,h4,.title,[class*='title']"))
+    // If we can see the page title row, place it just above that row.
+    const title = Array.from(document.querySelectorAll("h1,h2,h3,.title,[class*='title'],[class*='Title']"))
       .find(el => {
-        if (!isVisible(el) || el.closest("#fries-giveaway-panel") || el.closest("#fries-giveaway-page-slot")) return false;
+        if (!isVisible(el) || ignore(el)) return false;
         const txt = (el.textContent || "").trim();
         const r = el.getBoundingClientRect();
-        return txt.length > 0 && txt.length < 40 && r.top > 220;
+        return txt.length > 0 && txt.length < 50 && r.top > 120 && r.top < window.innerHeight * 0.65;
       });
+    if (title) {
+      const tr = title.getBoundingClientRect();
+      bottom = Math.max(bottom, tr.top - 42);
+    }
 
-    if (pageTitle && pageTitle.parentElement) return pageTitle.parentElement;
-    return document.body;
+    // PDA/mobile safe clamp so it stays in the red highlighted zone, not offscreen.
+    const minTop = 150;
+    const maxTop = Math.min(340, window.innerHeight - 120);
+    return Math.round(Math.max(minTop, Math.min(bottom || 218, maxTop)));
   }
 
   function mountButtonInHighlightedSpot() {
@@ -181,17 +190,9 @@
       slot.id = "fries-giveaway-page-slot";
     }
     if (bar.parentElement !== slot) slot.appendChild(bar);
+    if (slot.parentElement !== document.body) document.body.appendChild(slot);
 
-    const mount = findHighlightedPageMount();
-    try {
-      if (mount === document.body) {
-        if (slot.parentElement !== document.body) document.body.insertBefore(slot, document.body.firstChild);
-      } else if (mount.firstElementChild !== slot) {
-        mount.insertBefore(slot, mount.firstChild);
-      }
-    } catch (e) {
-      if (slot.parentElement !== document.body) document.body.insertBefore(slot, document.body.firstChild);
-    }
+    slot.style.top = computeLauncherTop() + "px";
   }
 
   function ensureButton() {
@@ -1417,20 +1418,23 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
 
   GM_addStyle(`
     #fries-giveaway-page-slot {
-      position: relative; z-index: 5; width: 100%; box-sizing: border-box;
-      padding: 5px 8px; margin: 0 0 4px;
-      background: linear-gradient(90deg, rgba(72,7,14,.96), rgba(105,12,22,.92), rgba(72,7,14,.96));
+      position: fixed !important; left: 0 !important; right: 0 !important; top: 218px;
+      z-index: 90000 !important; width: 100% !important; box-sizing: border-box;
+      padding: 5px 8px; margin: 0;
+      background: linear-gradient(90deg, rgba(72,7,14,.97), rgba(105,12,22,.94), rgba(72,7,14,.97));
       border-top: 1px solid rgba(255,255,255,.08); border-bottom: 1px solid rgba(0,0,0,.55);
-      display: flex; align-items: center; justify-content: flex-start;
+      display: flex !important; align-items: center; justify-content: flex-start;
+      pointer-events: auto !important;
     }
     #fries-giveaway-topbar {
-      position: relative; z-index: 6;
-      min-height: 30px; max-width: 100%; border: 1px solid rgba(255,255,255,.16);
+      position: relative !important; z-index: 90001 !important;
+      min-height: 30px; max-width: calc(100vw - 16px); border: 1px solid rgba(255,255,255,.16);
       border-radius: 999px; margin: 0;
       background: linear-gradient(90deg,#17131d,#2b1b44,#17131d);
-      color: #fff; cursor: pointer; display: inline-flex; align-items: center; justify-content: flex-start;
+      color: #fff; cursor: pointer; display: inline-flex !important; align-items: center; justify-content: flex-start;
       gap: 7px; padding: 4px 10px 4px 5px; box-shadow: 0 2px 8px rgba(0,0,0,.35);
       font-family: Arial, sans-serif; overflow: hidden; box-sizing: border-box;
+      opacity: 1 !important; visibility: visible !important;
     }
     .fg-top-icon { width: 22px; height: 22px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; background: radial-gradient(circle at 35% 20%,#ffeaa5,#b77414 60%,#6b3a08); color: #1b1205; font-size: 14px; flex: 0 0 auto; }
     .fg-top-text { font-weight: 900; text-transform: uppercase; letter-spacing: .06em; font-size: 12px; color: #ffe9a8; text-shadow: 0 1px 1px rgba(0,0,0,.7); flex: 0 0 auto; }
@@ -1508,7 +1512,9 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
   ensureButton();
   setInterval(() => {
     ensureButton();
-  }, 2500);
+  }, 1200);
+  window.addEventListener("resize", ensureButton, { passive: true });
+  window.addEventListener("scroll", ensureButton, { passive: true });
   try {
     new MutationObserver(() => {
       if (!document.hidden) ensureButton();
