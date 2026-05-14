@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.34
-// @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
+// @version      1.0.36
+// @description  Free-entry rolling giveaway overlay for Torn. Compact PDA-safe page-header launcher.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @match        https://*.torn.com/*
@@ -200,9 +200,19 @@
   }
 
   function ensureButton() {
-    mountGiveawayPageHeader();
-    updateTopbarJackpot();
-    silentTopbarRefresh();
+    if ($("#fries-giveaway-topbar")) return;
+    if (!document.body) return;
+
+    const btn = document.createElement("button");
+    btn.id = "fries-giveaway-topbar";
+    btn.type = "button";
+    btn.title = "Open Fries91's Giveaway";
+    btn.innerHTML = `
+      <span class="fg-top-icon">🎁</span>
+      <span class="fg-top-text">Giveaway</span>
+    `;
+    btn.addEventListener("click", togglePanel);
+    document.body.appendChild(btn);
   }
 
   function ensurePanel() {
@@ -1511,15 +1521,16 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     @media (max-width: 560px) { .fg-point-admin-row { grid-template-columns: 1fr; } .fg-point-table th, .fg-point-table td { padding: 7px 5px; font-size: 12px; } }
   `);
 
-  ensureButton();
-  setInterval(() => {
-    ensureButton();
-  }, 1200);
-  window.addEventListener("resize", ensureButton, { passive: true });
-  window.addEventListener("scroll", ensureButton, { passive: true });
-  try {
-    new MutationObserver(() => {
-      if (!document.hidden) ensureButton();
-    }).observe(document.body, { childList: true, subtree: true });
-  } catch (e) {}
+  /* PDA-safe startup: mount the Torn page-header launcher with limited retries only.
+     No MutationObserver loop, no setInterval loop, no scroll/resize remounting. */
+  function startLauncherOnce() {
+    try {
+      mountGiveawayPageHeader();
+      updateTopbarJackpot();
+      silentTopbarRefresh();
+    } catch (e) {}
+  }
+
+  startLauncherOnce();
+  [600, 1600, 3500].forEach(ms => setTimeout(startLauncherOnce, ms));
 })();
