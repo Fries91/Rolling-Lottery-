@@ -13,7 +13,6 @@ ADMIN_PLAYER_ID = int(os.environ.get("ADMIN_PLAYER_ID", "3679030"))
 DB_PATH = os.environ.get("DB_PATH", "giveaway.db")
 TORN_API_BASE = os.environ.get("TORN_API_BASE", "https://api.torn.com")
 REQUEST_TIMEOUT = float(os.environ.get("REQUEST_TIMEOUT", "12"))
-POINT_REQUEST_TTL_SECONDS = int(os.environ.get("POINT_REQUEST_TTL_SECONDS", "600"))
 
 app = Flask(__name__)
 CORS(app, supports_credentials=False)
@@ -247,29 +246,12 @@ def ensure_point_requests(conn):
             name TEXT NOT NULL DEFAULT 'Unknown',
             amount INTEGER NOT NULL,
             reason TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL DEFAULT 'pending_payment',
-            item_name TEXT NOT NULL DEFAULT '',
-            item_value INTEGER NOT NULL DEFAULT 0,
-            item_qty INTEGER NOT NULL DEFAULT 0,
-            total_value INTEGER NOT NULL DEFAULT 0,
-            base_value INTEGER NOT NULL DEFAULT 850000,
-            matched_log_id TEXT,
-            matched_log_time INTEGER,
-            verify_note TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
             reviewed_by INTEGER,
             reviewed_at INTEGER,
             created_at INTEGER NOT NULL
         )
     """)
-    # Migration-safe: add the new item verification columns to older DBs.
-    add_col(conn, "point_requests", "item_name", "item_name TEXT NOT NULL DEFAULT ''")
-    add_col(conn, "point_requests", "item_value", "item_value INTEGER NOT NULL DEFAULT 0")
-    add_col(conn, "point_requests", "item_qty", "item_qty INTEGER NOT NULL DEFAULT 0")
-    add_col(conn, "point_requests", "total_value", "total_value INTEGER NOT NULL DEFAULT 0")
-    add_col(conn, "point_requests", "base_value", "base_value INTEGER NOT NULL DEFAULT 850000")
-    add_col(conn, "point_requests", "matched_log_id", "matched_log_id TEXT")
-    add_col(conn, "point_requests", "matched_log_time", "matched_log_time INTEGER")
-    add_col(conn, "point_requests", "verify_note", "verify_note TEXT")
 
 
 def ensure_point_conversion_items(conn):
@@ -294,20 +276,8 @@ def ensure_point_conversion_items(conn):
     t = now_ts()
     conn.execute("""
         INSERT OR IGNORE INTO point_conversion_items
-        (id, base_value,
-         item1_name, item1_value,
-         item2_name, item2_value,
-         item3_name, item3_value,
-         item4_name, item4_value,
-         item5_name, item5_value,
-         updated_at)
-        VALUES (1, 820000,
-                'Donator Pack', 23500000,
-                'Feathery Hotel Coupon', 12000000,
-                'Drug Pack', 4000000,
-                'Erotic DVD', 3600000,
-                'Xanax', 820000,
-                ?)
+        (id, base_value, item1_name, item1_value, updated_at)
+        VALUES (1, 850000, 'Xanax', 850000, ?)
     """, (t,))
 
 
@@ -737,7 +707,7 @@ def admin_entries(s):
             FROM entries
             WHERE giveaway_id=?
             ORDER BY
-                CASE status WHEN 'pending_payment' THEN 0 WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,
+                CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,
                 created_at ASC
         """, (g["id"],)).fetchall()
 
@@ -797,14 +767,15 @@ def admin_save(s):
         conn.execute("""
             UPDATE giveaways
             SET title=?, prize_label=?, base_payout=?, entry_item_name=?, entry_item_value=?,
-                rollover_pool=?, draw_at=?, updated_at=?
+                point_cost=?, rollover_pool=?, draw_at=?, updated_at=?
             WHERE id=?
         """, (
             (data.get("title") or "Fries91's Giveaway").strip(),
             (data.get("prize_label") or "Faction/Event Prize").strip(),
             int(data.get("base_payout") or 0),
-            (data.get("entry_item_name") or "Xanax").strip(),
+            (data.get("entry_item_name") or "Point").strip(),
             int(data.get("entry_item_value") or 0),
+            max(1, int(data.get("point_cost") or 1)),
             int(data.get("rollover_pool") or 0),
             int(data["draw_at"]) if str(data.get("draw_at") or "").isdigit() else None,
             t,
@@ -1495,260 +1466,26 @@ def api_winners():
     return jsonify({"ok": True, "winners": winners})
 
 
-
-def normalize_item_name(name):
-    return " ".join(str(name or "").strip().lower().split())
-
-
-def calculate_request_points(conn, item_name, quantity):
-    conversion = point_conversion_payload(conn)
-    wanted = normalize_item_name(item_name)
-    quantity = max(1, int(quantity or 1))
-    matched = None
-    for item in conversion.get("items", []):
-        if normalize_item_name(item.get("name")) == wanted:
-            matched = item
-            break
-    if not matched:
-        raise ValueError("That item is not in the accepted point conversion list")
-    item_value = int(matched["value"] or 0)
-    base_value = max(1, int(conversion.get("base_value") or 820000))
-    total_value = item_value * quantity
-    points = total_value // base_value
-    if points <= 0:
-        raise ValueError("This item value does not convert into at least 1 point")
-    return {
-        "item_name": matched["name"],
-        "item_value": item_value,
-        "item_qty": quantity,
-        "total_value": total_value,
-        "base_value": base_value,
-        "amount": points,
-        "reason": f"item verification: {quantity} x {matched['name']} @ ${item_value:,} = ${total_value:,} / ${base_value:,} = {points} pts rounded down"
-    }
-
-
-def point_request_expires_at(row):
-    return int(row["created_at"] or 0) + POINT_REQUEST_TTL_SECONDS
-
-
-def expire_old_point_requests(conn):
-    ensure_point_requests(conn)
-    cutoff = now_ts() - POINT_REQUEST_TTL_SECONDS
-    conn.execute("""
-        UPDATE point_requests
-        SET status='expired', reviewed_at=?, verify_note=?
-        WHERE status IN ('pending', 'pending_payment')
-          AND created_at < ?
-    """, (now_ts(), "Expired: item was not verified within 10 minutes.", cutoff))
-
-
-def require_point_request_open(conn, row):
-    if row["status"] not in ("pending", "pending_payment"):
-        raise ValueError("Point request is already reviewed")
-    if now_ts() > point_request_expires_at(row):
-        conn.execute("""
-            UPDATE point_requests
-            SET status='expired', reviewed_at=?, verify_note=?
-            WHERE id=?
-        """, (now_ts(), "Expired: item was not verified within 10 minutes.", row["id"]))
-        raise ValueError("This point request expired. Requests stay open for 10 minutes after you create them.")
-
-
-def flatten_log_text(value):
-    if isinstance(value, dict):
-        return " ".join(flatten_log_text(v) for v in value.values())
-    if isinstance(value, (list, tuple)):
-        return " ".join(flatten_log_text(v) for v in value)
-    return str(value or "")
-
-
-def log_id_and_time(log_key, log):
-    log_id = str(log.get("log_id") or log.get("id") or log.get("event_id") or log_key)
-    ts = int(log.get("timestamp") or log.get("time") or log.get("created_at") or 0)
-    return log_id, ts
-
-
-def looks_like_matching_item_send(log, req):
-    text = flatten_log_text(log).lower()
-    item_name = normalize_item_name(req["item_name"])
-    player_id = str(req["player_id"])
-    player_name = str(req["name"] or "").lower()
-    qty = int(req["item_qty"] or 1)
-
-    if item_name not in text:
-        return False
-    if player_id not in text and (not player_name or player_name not in text):
-        return False
-
-    receive_words = ("received", "receive", "sent", "given", "give", "from", "trade")
-    if not any(w in text for w in receive_words):
-        return False
-
-    # If Torn exposes item quantity fields, respect them. If not, allow text match and admin can review.
-    possible_qty = []
-    for key in ("quantity", "qty", "amount", "count"):
-        try:
-            possible_qty.append(int(log.get(key) or 0))
-        except Exception:
-            pass
-    data = log.get("data") if isinstance(log, dict) else None
-    if isinstance(data, dict):
-        for key in ("quantity", "qty", "amount", "count"):
-            try:
-                possible_qty.append(int(data.get(key) or 0))
-            except Exception:
-                pass
-    possible_qty = [x for x in possible_qty if x > 0]
-    if possible_qty and max(possible_qty) < qty:
-        return False
-    return True
-
-
-def admin_api_key_for_verification(conn):
-    key = (os.environ.get("TORN_ADMIN_API_KEY") or os.environ.get("ADMIN_API_KEY") or "").strip()
-    if key:
-        return key
-    row = conn.execute("SELECT api_key FROM users WHERE player_id=?", (ADMIN_PLAYER_ID,)).fetchone()
-    return (row["api_key"] if row else "") or ""
-
-
-def fetch_admin_item_logs(conn):
-    key = admin_api_key_for_verification(conn)
-    if not key:
-        raise ValueError("Admin API key missing. Login as admin once, or set TORN_ADMIN_API_KEY in Render env.")
-
-    # Try common Torn API log selections. If Torn changes the format, manual approval still works.
-    urls = [
-        f"{TORN_API_BASE}/user/?selections=log&key={key}",
-        f"{TORN_API_BASE}/user/?selections=events&key={key}",
-    ]
-    last_error = None
-    for url in urls:
-        try:
-            r = requests.get(url, timeout=REQUEST_TIMEOUT)
-            data = r.json()
-            if data.get("error"):
-                last_error = data["error"].get("error", "Torn API error")
-                continue
-            if isinstance(data.get("log"), dict):
-                return data["log"]
-            if isinstance(data.get("events"), dict):
-                return data["events"]
-            # Some endpoints return a top-level dict of logs.
-            possible = {k: v for k, v in data.items() if isinstance(v, dict)}
-            if possible:
-                return possible
-        except Exception as exc:
-            last_error = str(exc)
-    raise ValueError("Could not read admin Torn item logs" + (f": {last_error}" if last_error else ""))
-
-
-def verify_point_request_from_torn(conn, row, reviewer_id=None):
-    require_point_request_open(conn, row)
-
-    logs = fetch_admin_item_logs(conn)
-    used_ids = {
-        str(r["matched_log_id"])
-        for r in conn.execute("SELECT matched_log_id FROM point_requests WHERE matched_log_id IS NOT NULL").fetchall()
-        if r["matched_log_id"]
-    }
-    created_at = int(row["created_at"] or 0)
-
-    for log_key, log in logs.items():
-        if not isinstance(log, dict):
-            continue
-        log_id, log_time = log_id_and_time(log_key, log)
-        if log_id in used_ids:
-            continue
-        if log_time and created_at and log_time < created_at:
-            continue
-        if not looks_like_matching_item_send(log, row):
-            continue
-
-        add_points(
-            conn,
-            int(row["player_id"]),
-            row["name"],
-            int(row["amount"]),
-            f"verified item request #{row['id']}: {row['item_qty']} x {row['item_name']}",
-            reviewer_id or ADMIN_PLAYER_ID
-        )
-        note = f"Verified from Torn log {log_id}."
-        conn.execute("""
-            UPDATE point_requests
-            SET status='approved', reviewed_by=?, reviewed_at=?, matched_log_id=?, matched_log_time=?, verify_note=?
-            WHERE id=?
-        """, (reviewer_id or ADMIN_PLAYER_ID, now_ts(), log_id, log_time or now_ts(), note, row["id"]))
-        return {"approved": True, "matched_log_id": log_id, "note": note}
-
-    conn.execute("UPDATE point_requests SET verify_note=? WHERE id=?", ("No matching item send found yet.", row["id"]))
-    return {"approved": False, "note": "No matching item send found yet."}
-
 @app.post("/api/points/request")
 @login_required
 def api_points_request(s):
     data = request.get_json(force=True, silent=True) or {}
-    item_name = (data.get("item_name") or "").strip()
-    quantity = int(data.get("quantity") or data.get("item_qty") or 0)
+    amount = int(data.get("amount") or 0)
+    reason = (data.get("reason") or "").strip()
 
-    if not item_name:
-        return jsonify({"ok": False, "error": "Choose an item first"}), 400
-    if quantity <= 0:
-        return jsonify({"ok": False, "error": "Enter how many items were sent"}), 400
-    if quantity > 100000:
-        return jsonify({"ok": False, "error": "Quantity is too high"}), 400
+    if amount <= 0:
+        return jsonify({"ok": False, "error": "Request amount must be at least 1 point"}), 400
+    if amount > 100000:
+        return jsonify({"ok": False, "error": "Point request amount is too high"}), 400
 
     with db() as conn:
         ensure_point_requests(conn)
-        expire_old_point_requests(conn)
-        try:
-            calc = calculate_request_points(conn, item_name, quantity)
-        except ValueError as exc:
-            return jsonify({"ok": False, "error": str(exc)}), 400
-
-        created = now_ts()
         conn.execute("""
-            INSERT INTO point_requests
-            (player_id, name, amount, reason, status, item_name, item_value, item_qty, total_value, base_value, created_at)
-            VALUES (?, ?, ?, ?, 'pending_payment', ?, ?, ?, ?, ?, ?)
-        """, (
-            s["player_id"], s["name"], calc["amount"], calc["reason"],
-            calc["item_name"], calc["item_value"], calc["item_qty"], calc["total_value"], calc["base_value"], created
-        ))
-        request_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
-        expires_at = created + POINT_REQUEST_TTL_SECONDS
+            INSERT INTO point_requests (player_id, name, amount, reason, status, created_at)
+            VALUES (?, ?, ?, ?, 'pending', ?)
+        """, (s["player_id"], s["name"], amount, reason, now_ts()))
 
-    return jsonify({
-        "ok": True,
-        "message": "Point request saved. You have 10 minutes to send the item to Fries91 [3679030], then press Verify.",
-        "request_id": request_id,
-        "expires_at": expires_at,
-        "ttl_seconds": POINT_REQUEST_TTL_SECONDS,
-        "calculated": calc
-    })
-
-
-@app.post("/api/points/verify")
-@login_required
-def api_points_verify(s):
-    data = request.get_json(force=True, silent=True) or {}
-    request_id = int(data.get("request_id") or 0)
-    if not request_id:
-        return jsonify({"ok": False, "error": "Missing request id"}), 400
-
-    with db() as conn:
-        ensure_point_requests(conn)
-        expire_old_point_requests(conn)
-        row = conn.execute("SELECT * FROM point_requests WHERE id=? AND player_id=?", (request_id, s["player_id"])).fetchone()
-        if not row:
-            return jsonify({"ok": False, "error": "Point request not found"}), 404
-        try:
-            result = verify_point_request_from_torn(conn, row, ADMIN_PLAYER_ID)
-        except ValueError as exc:
-            return jsonify({"ok": False, "error": str(exc)}), 400
-
-    return jsonify({"ok": True, **result})
+    return jsonify({"ok": True, "message": "Point request sent to admin"})
 
 
 @app.get("/api/points/requests")
@@ -1756,9 +1493,8 @@ def api_points_verify(s):
 def api_my_point_requests(s):
     with db() as conn:
         ensure_point_requests(conn)
-        expire_old_point_requests(conn)
         rows = conn.execute("""
-            SELECT id, amount, reason, status, item_name, item_value, item_qty, total_value, base_value, matched_log_id, verify_note, reviewed_at, created_at, (created_at + 600) AS expires_at
+            SELECT id, amount, reason, status, reviewed_at, created_at
             FROM point_requests
             WHERE player_id=?
             ORDER BY id DESC
@@ -1773,12 +1509,11 @@ def api_my_point_requests(s):
 def admin_points_requests(s):
     with db() as conn:
         ensure_point_requests(conn)
-        expire_old_point_requests(conn)
         rows = conn.execute("""
-            SELECT id, player_id, name, amount, reason, status, item_name, item_value, item_qty, total_value, base_value, matched_log_id, verify_note, reviewed_by, reviewed_at, created_at, (created_at + 600) AS expires_at
+            SELECT id, player_id, name, amount, reason, status, reviewed_by, reviewed_at, created_at
             FROM point_requests
             ORDER BY
-                CASE status WHEN 'pending_payment' THEN 0 WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,
+                CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,
                 id DESC
             LIMIT 100
         """).fetchall()
@@ -1795,12 +1530,11 @@ def admin_points_request_action(s):
 
     if not request_id:
         return jsonify({"ok": False, "error": "Missing request id"}), 400
-    if action not in ("approve", "reject", "verify"):
+    if action not in ("approve", "reject"):
         return jsonify({"ok": False, "error": "Invalid action"}), 400
 
     with db() as conn:
         ensure_point_requests(conn)
-        expire_old_point_requests(conn)
         row = conn.execute(
             "SELECT * FROM point_requests WHERE id=?",
             (request_id,)
@@ -1808,15 +1542,8 @@ def admin_points_request_action(s):
 
         if not row:
             return jsonify({"ok": False, "error": "Point request not found"}), 404
-        if row["status"] not in ("pending", "pending_payment"):
+        if row["status"] != "pending":
             return jsonify({"ok": False, "error": "Point request already reviewed"}), 400
-
-        if action == "verify":
-            try:
-                result = verify_point_request_from_torn(conn, row, int(s["player_id"]))
-            except ValueError as exc:
-                return jsonify({"ok": False, "error": str(exc)}), 400
-            return jsonify({"ok": True, "status": "approved" if result.get("approved") else row["status"], **result})
 
         new_status = "approved" if action == "approve" else "rejected"
 
@@ -1826,15 +1553,15 @@ def admin_points_request_action(s):
                 int(row["player_id"]),
                 row["name"],
                 int(row["amount"]),
-                f"manual approved point request #{request_id}",
+                f"approved point request #{request_id}",
                 int(s["player_id"])
             )
 
         conn.execute("""
             UPDATE point_requests
-            SET status=?, reviewed_by=?, reviewed_at=?, verify_note=?
+            SET status=?, reviewed_by=?, reviewed_at=?
             WHERE id=?
-        """, (new_status, int(s["player_id"]), now_ts(), "Manual " + new_status, request_id))
+        """, (new_status, int(s["player_id"]), now_ts(), request_id))
 
     return jsonify({"ok": True, "status": new_status})
 
