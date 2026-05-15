@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.31
+// @version      1.0.44
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -197,21 +197,77 @@
     }
   }
 
+  function isVisible(el) {
+    if (!el || !el.isConnected) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity || 1) === 0) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 40 && r.height > 8 && r.bottom > 0 && r.top < window.innerHeight;
+  }
+
+  function findTornPageHeaderMount() {
+    const selectors = [
+      "#mainContainer",
+      "#main-container",
+      "#content",
+      "#content-wrapper",
+      ".content-wrapper",
+      ".contentWrapper",
+      ".main-content",
+      ".mainContent",
+      "main",
+      "[class*='content-wrapper']",
+      "[class*='ContentWrapper']"
+    ];
+
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (el && el.isConnected && !el.closest("#fries-giveaway-panel") && !el.closest("#fries-giveaway-page-header")) {
+        return el;
+      }
+    }
+
+    const title = Array.from(document.querySelectorAll("h1,h2,.title,[class*='title'],[class*='Title']"))
+      .find(el => isVisible(el) && !el.closest("#fries-giveaway-panel") && !el.closest("#fries-giveaway-page-header"));
+    if (title && title.parentElement && title.parentElement.parentElement) {
+      return title.parentElement.parentElement;
+    }
+
+    return document.body;
+  }
+
+  function mountGiveawayPageHeader() {
+    if (!document.body) return false;
+
+    let header = $("#fries-giveaway-page-header");
+    if (!header) {
+      header = document.createElement("div");
+      header.id = "fries-giveaway-page-header";
+      header.innerHTML = `
+        <button id="fries-giveaway-topbar" type="button" title="Open Fries91's Giveaway">
+          <span class="fg-top-icon">🏆</span>
+          <span class="fg-top-text">FRIES91'S GIVEAWAY</span>
+          <span class="fg-top-marquee">Current Jackpot loading...</span>
+        </button>
+      `;
+      header.querySelector("#fries-giveaway-topbar")?.addEventListener("click", togglePanel);
+    }
+
+    const mount = findTornPageHeaderMount();
+    if (!mount) return false;
+
+    if (header.parentElement !== mount || mount.firstChild !== header) {
+      mount.insertBefore(header, mount.firstChild || null);
+    }
+    return true;
+  }
+
   function ensureButton() {
-    if ($("#fries-giveaway-topbar")) return;
-    const bar = document.createElement("button");
-    bar.id = "fries-giveaway-topbar";
-    bar.type = "button";
-    bar.title = "Open Fries91's Giveaway";
-    bar.innerHTML = `
-      <span class="fg-top-icon">🏆</span>
-      <span class="fg-top-text">FRIES91'S GIVEAWAY</span>
-      <span class="fg-top-marquee">Current Jackpot loading...</span>
-    `;
-    bar.addEventListener("click", togglePanel);
-    document.body.appendChild(bar);
-    updateTopbarJackpot();
-    silentTopbarRefresh();
+    const mounted = mountGiveawayPageHeader();
+    if (mounted) {
+      updateTopbarJackpot();
+      silentTopbarRefresh();
+    }
   }
 
   function ensurePanel() {
@@ -1433,18 +1489,41 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
 
 
   GM_addStyle(`
+    #fries-giveaway-page-header {
+      position: relative !important;
+      display: block !important;
+      width: 100% !important;
+      box-sizing: border-box !important;
+      z-index: 20 !important;
+      margin: 6px 0 8px 0 !important;
+      padding: 0 6px !important;
+      clear: both !important;
+      font-family: Arial, sans-serif !important;
+    }
     #fries-giveaway-topbar {
-      position: fixed; top: 0; left: 0; right: 0; z-index: 999998;
-      min-height: 34px; width: 100%; border: 0; border-bottom: 1px solid rgba(255,255,255,.16);
-      background: linear-gradient(90deg,#18111f,#321d50,#18111f);
-      color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center;
-      gap: 10px; padding: 6px 12px; box-shadow: 0 5px 18px rgba(0,0,0,.35);
-      font-family: Arial, sans-serif; overflow: hidden;
+      position: relative !important;
+      inset: auto !important;
+      width: 100% !important;
+      min-height: 38px !important;
+      border: 1px solid rgba(255,255,255,.16) !important;
+      border-radius: 10px !important;
+      background: linear-gradient(90deg,#18111f,#321d50,#18111f) !important;
+      color: #fff !important;
+      cursor: pointer !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      gap: 9px !important;
+      padding: 7px 10px !important;
+      box-shadow: 0 4px 12px rgba(0,0,0,.28) !important;
+      overflow: hidden !important;
+      box-sizing: border-box !important;
+      font-family: Arial, sans-serif !important;
     }
     .fg-top-icon { width: 24px; height: 24px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; background: radial-gradient(circle at 35% 20%,#ffeaa5,#b77414 60%,#6b3a08); color: #1b1205; font-size: 15px; flex: 0 0 auto; }
     .fg-top-text { font-weight: 900; text-transform: uppercase; letter-spacing: .08em; font-size: 13px; color: #ffe9a8; text-shadow: 0 1px 1px rgba(0,0,0,.7); flex: 0 0 auto; }
     .fg-top-marquee { color: #d9d1f5; font-size: 12px; white-space: nowrap; opacity: .95; overflow: hidden; text-overflow: ellipsis; }
-    #fries-giveaway-panel { position: fixed; right: 12px; top: 46px; z-index: 999999; width: min(430px, calc(100vw - 24px)); max-height: calc(100vh - 58px); display: none; overflow: hidden; border-radius: 18px; background: #11131a; color: #f4f2ff; border: 1px solid rgba(255,255,255,.16); box-shadow: 0 18px 60px rgba(0,0,0,.55); font-family: Arial, sans-serif; }
+    #fries-giveaway-panel { position: fixed; right: 12px; top: 70px; z-index: 999999; width: min(430px, calc(100vw - 24px)); max-height: calc(100vh - 58px); display: none; overflow: hidden; border-radius: 18px; background: #11131a; color: #f4f2ff; border: 1px solid rgba(255,255,255,.16); box-shadow: 0 18px 60px rgba(0,0,0,.55); font-family: Arial, sans-serif; }
     #fries-giveaway-panel.open { display: block; }
     .fg-head { display:flex; align-items:center; justify-content:space-between; padding: 14px; background: linear-gradient(135deg,#1b102b,#301a50); }
     .fg-title { font-weight: 800; font-size: 18px; }
@@ -1518,8 +1597,12 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     .fg-calc-line:last-child { border-bottom:0; }
     .fg-calc-line span { font-weight:900; color:#ffffff; }
     .fg-warning-box, .fg-warnline { margin-top:8px; padding:8px; border-radius:10px; background:rgba(255,183,77,.14); border:1px solid rgba(255,183,77,.35); color:#ffe6b0 !important; font-weight:800; }
-    @media (max-width: 560px) { .fg-point-admin-row { grid-template-columns: 1fr; } .fg-point-table th, .fg-point-table td { padding: 8px 6px; font-size: 12px; } }
+    @media (max-width: 560px) {
+      #fries-giveaway-page-header { padding: 0 4px !important; margin: 5px 0 7px 0 !important; } .fg-point-admin-row { grid-template-columns: 1fr; } .fg-point-table th, .fg-point-table td { padding: 8px 6px; font-size: 12px; } }
   `);
 
   ensureButton();
+  setTimeout(ensureButton, 300);
+  setTimeout(ensureButton, 900);
+  setTimeout(ensureButton, 1800);
 })();
