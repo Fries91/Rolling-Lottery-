@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.46
+// @version      1.0.47
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Points, Rules, Winners, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -278,7 +278,7 @@
       <div class="fg-head">
         <div>
           <div class="fg-title">🎁 Fries91's Giveaway</div>
-          <div class="fg-sub">Rolling jackpot • Admin approval required</div>
+          <div class="fg-sub">Monthly rolling jackpot • Points entry</div>
         </div>
         <button class="fg-close">×</button>
       </div>
@@ -395,6 +395,9 @@
   function renderOverview() {
     const g = state;
     setTabClasses();
+    const openRolling = g.status === "open" && !g.winner_name;
+    const minCost = Number(g.point_cost || 1);
+    const maxCost = Number(g.max_entries_per_player || 999999);
     $(".fg-body").innerHTML = `
       <div class="fg-hero">
         <div class="fg-kicker">${esc(g.status).toUpperCase()}</div>
@@ -402,14 +405,43 @@
         <div class="fg-big">${money(g.total_pool)}</div>
         <div class="fg-subline">Players Cut: ${money(g.player_cut)}</div>
         <div class="fg-subline small">Next Pot: ${money(g.next_starting_jackpot || g.rollover_cut || 0)}</div>
+        <div class="fg-subline small">Ends: ${esc(fmtTime(g.end_at || g.draw_at))} • ${esc(countdownText(g.end_at || g.draw_at))}</div>
+        ${openRolling ? `
+          <div class="fg-overview-entry-box fg-rolling-entry-box">
+            <b>Enter Rolling Jackpot</b>
+            <label>Points to use</label>
+            <input class="fg-input" id="fg-rolling-entry-points" type="number" min="${esc(minCost)}" max="${esc(maxCost)}" value="${esc(minCost)}">
+            <div class="fg-muted">Min ${esc(minCost)} point(s). More points = more weight.</div>
+            <button class="fg-primary" id="fg-enter-rolling-jackpot">Enter Rolling Jackpot</button>
+          </div>
+        ` : ""}
       </div>
 
       <div id="fg-event-overview-boxes"></div>
       <button class="fg-secondary" id="fg-refresh">Refresh</button>
     `;
     $("#fg-refresh").addEventListener("click", refresh);
+    $("#fg-enter-rolling-jackpot")?.addEventListener("click", enterRollingJackpot);
     renderEventOverviewBoxes();
     updateTopbarJackpot();
+  }
+
+  async function enterRollingJackpot() {
+    if (!user) {
+      alert("Login from the Rules tab before entering.");
+      activeTab = "rules";
+      render();
+      return;
+    }
+    const pointsSpent = Number($("#fg-rolling-entry-points")?.value || 0);
+    if (pointsSpent <= 0) return alert("Enter at least 1 point.");
+    try {
+      await api("/api/enter", { method: "POST", body: { draw_id: state.id, points_spent: pointsSpent } });
+      alert(`Entered rolling jackpot with ${pointsSpent} point(s).`);
+      await refresh();
+    } catch (e) {
+      alert(e.message);
+    }
   }
 
   async function renderEventOverviewBoxes() {
@@ -808,30 +840,25 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     const drawVal = state.draw_at ? new Date(state.draw_at * 1000).toISOString().slice(0, 16) : "";
     $(".fg-body").innerHTML = `
       <div class="fg-card private">
-        <b>Rolling Jackpot Controls</b>
+        <b>Rolling Jackpot Points</b>
         <label>Title</label>
         <input class="fg-input" id="fg-title" value="${esc(state.title || "Fries91's Giveaway")}">
-
-        <label>Prize Label</label>
-        <input class="fg-input" id="fg-prize-label" value="${esc(state.prize_label)}">
 
         <label>Starting Jackpot</label>
         <input class="fg-input" id="fg-base-payout" type="number" value="${esc(state.base_payout)}">
 
-        <label>Entry Item Name</label>
-        <input class="fg-input" id="fg-entry-item-name" value="${esc(state.entry_item_name)}">
+        <label>Points To Enter</label>
+        <input class="fg-input" id="fg-rolling-point-cost" type="number" min="1" value="${esc(state.point_cost || 1)}">
 
-        <label>Entry Item Value</label>
-        <input class="fg-input" id="fg-entry-item-value" type="number" value="${esc(state.entry_item_value)}">
-
-        <label>Draw Time</label>
-        <input class="fg-input" id="fg-draw-at" type="datetime-local" value="${esc(drawVal)}">
+        <label>Each Point Is Worth</label>
+        <input class="fg-input" id="fg-entry-item-value" type="number" min="1" value="${esc(state.entry_item_value || 0)}">
 
         <div class="fg-split">
-          <div>Approved Entries: <b>${state.approved_entry_count}</b></div>
-          <div>Pending Entries: <b>${state.pending_entry_count}</b></div>
+          <div>Status: <b>${esc(state.status)}</b></div>
+          <div>Timer Ends: <b>${esc(fmtTime(state.end_at || state.draw_at))}</b></div>
+          <div>Approved Points: <b>${state.approved_points_total || 0}</b></div>
           <div>Starting Jackpot: <b>${money(state.base_payout)}</b></div>
-          <div>Approved Points × Value: <b>${state.approved_points_total || 0} × ${money(state.entry_item_value)} = ${money(state.entry_growth_total)}</b></div>
+          <div>Points × Value: <b>${state.approved_points_total || 0} × ${money(state.entry_item_value)} = ${money(state.entry_growth_total)}</b></div>
           <div>Rolling Jackpot: <b>${money(state.total_pool)}</b></div>
           <div>Player 60%: <b>${money(state.player_cut)}</b></div>
           <div>Rollover 20%: <b>${money(state.rollover_cut)}</b></div>
@@ -840,10 +867,9 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
         </div>
 
         <button class="fg-primary" id="fg-save">Save Settings</button>
-        <button class="fg-secondary" id="fg-open">Open Giveaway</button>
+        <button class="fg-secondary" id="fg-open">Open Giveaway / Start 30 Day Timer</button>
         <button class="fg-secondary" id="fg-close-giveaway">Close Giveaway</button>
-        <button class="fg-warn" id="fg-draw">Draw Winner</button>
-        <button class="fg-secondary" id="fg-roll">Start Next Roll From Rollover</button>
+        <button class="fg-warn" id="fg-draw">Draw Winner Now</button>
       </div>
 
       <div class="fg-card private">
@@ -937,7 +963,6 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     `;
 
     $("#fg-save").addEventListener("click", saveAdmin);
-    $("#fg-roll").addEventListener("click", rollAdmin);
     $("#fg-draw").addEventListener("click", drawAdmin);
     $("#fg-load-admin-stats")?.addEventListener("click", loadAdminStats);
     $("#fg-save-point-conversions")?.addEventListener("click", adminSavePointConversions);
@@ -1008,16 +1033,12 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
 
 
   function adminPayload() {
-    const dt = $("#fg-draw-at").value;
-    const draw_at = dt ? Math.floor(new Date(dt).getTime() / 1000) : null;
     return {
       title: $("#fg-title").value.trim(),
-      prize_label: $("#fg-prize-label").value.trim(),
       base_payout: Number($("#fg-base-payout").value || 0),
-      entry_item_name: $("#fg-entry-item-name").value.trim(),
+      point_cost: Number($("#fg-rolling-point-cost").value || 1),
       entry_item_value: Number($("#fg-entry-item-value").value || 0),
-      rollover_pool: 0,
-      draw_at
+      rollover_pool: 0
     };
   }
 
@@ -1574,9 +1595,9 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     .fg-tabs button { flex:1; padding: 9px 8px; border-radius: 10px; border:1px solid rgba(255,255,255,.12); background:#202333; color:#e9e3ff; cursor:pointer; }
     .fg-tabs button.active { background:#6b38b6; border-color:#9c6cff; }
     .fg-body { padding: 12px; overflow:auto; max-height: calc(100vh - 180px); }
-    .fg-hero { padding:18px; border-radius:18px; background: radial-gradient(circle at top left,#7143bd,#21152f 55%); border:1px solid rgba(255,255,255,.16); margin-bottom: 10px; }
-    .fg-kicker { font-size:11px; letter-spacing:.1em; color:#d7c6ff; }
-    .fg-hero h2 { margin: 8px 0; font-size: 22px; }
+    .fg-hero { padding:24px 18px 18px; border-radius:18px; background: radial-gradient(circle at top left,#7143bd,#21152f 55%); border:1px solid rgba(255,255,255,.16); margin-bottom: 10px; }
+    .fg-kicker { font-size:11px; letter-spacing:.1em; display:block; margin-bottom:10px; line-height:1.2; color:#d7c6ff; }
+    .fg-hero h2 { margin: 0 0 12px; font-size: 22px; line-height:1.15; }
     .fg-big { font-size: 32px; font-weight: 900; }
     .fg-subline { margin-top:6px; font-size:16px; font-weight:800; color:#f4f2ff; }
     .fg-subline.small { font-size:13px; color:#c8c0dc; }
