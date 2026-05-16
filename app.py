@@ -863,9 +863,23 @@ def admin_draw(s):
             for _ in range(weight):
                 pool.append(row)
 
+        t = now_ts()
         winner = secrets.choice(pool)
-        conn.execute("UPDATE giveaways SET status='drawn', winner_player_id=?, winner_name=?, updated_at=? WHERE id=?",
-                     (winner["player_id"], winner["name"], now_ts(), g["id"]))
+        conn.execute("UPDATE giveaways SET status='drawn', winner_player_id=?, winner_name=?, auto_drawn_at=?, updated_at=? WHERE id=?",
+                     (winner["player_id"], winner["name"], t, t, g["id"]))
+        clear_entries_after_draw(conn, g["id"])
+
+        # If admin manually draws the rolling jackpot, immediately open the next monthly roll.
+        if (g["draw_type"] if "draw_type" in g.keys() else "rolling") == "rolling":
+            active_next = conn.execute("""
+                SELECT id FROM giveaways
+                WHERE deleted_at IS NULL AND draw_type='rolling' AND status='open' AND id != ?
+                ORDER BY id DESC LIMIT 1
+            """, (g["id"],)).fetchone()
+            if not active_next:
+                payload = clean_giveaway(conn, g, True)
+                _insert_next_rolling(conn, g, int(payload.get("rollover_cut") or 0), t)
+
     return jsonify({"ok": True, "winner": {"player_id": winner["player_id"], "name": winner["name"]}})
 
 @app.post("/api/admin/roll")
@@ -1088,6 +1102,14 @@ def _weighted_winner(rows):
     return secrets.choice(pool) if pool else None
 
 
+def clear_entries_after_draw(conn, giveaway_id):
+    """
+    Once a winner has been picked, remove that draw's entries so the next draw starts clean.
+    The winner is kept on the giveaways row for the Winners tab/admin notifications.
+    """
+    conn.execute("DELETE FROM entries WHERE giveaway_id=?", (int(giveaway_id),))
+
+
 def _insert_next_rolling(conn, current, next_base_payout, t):
     columns = [
         "title", "prize_label", "total_pool", "base_payout", "entry_item_name", "entry_item_value",
@@ -1170,12 +1192,14 @@ def auto_draw_ended_events(conn):
                 SET status='drawn', winner_player_id=?, winner_name=?, auto_drawn_at=?, updated_at=?
                 WHERE id=?
             """, (winner["player_id"], winner["name"], t, t, g["id"]))
+            clear_entries_after_draw(conn, g["id"])
         else:
             conn.execute("""
                 UPDATE giveaways
                 SET status='closed', auto_drawn_at=?, updated_at=?
                 WHERE id=?
             """, (t, t, g["id"]))
+            clear_entries_after_draw(conn, g["id"])
 
         if (g["draw_type"] if "draw_type" in g.keys() else "event") == "rolling":
             active_next = conn.execute("""
