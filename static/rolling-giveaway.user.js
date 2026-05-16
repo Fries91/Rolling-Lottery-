@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.45
-// @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
+// @version      1.0.46
+// @description  Free-entry rolling giveaway overlay for Torn. Overview, Points, Rules, Winners, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @match        https://*.torn.com/*
@@ -284,7 +284,6 @@
       </div>
       <div class="fg-tabs">
         <button data-tab="overview">Overview</button>
-        <button data-tab="entry">Entry</button>
         <button data-tab="points">Points</button>
         <button data-tab="rules">Rules</button>
         <button data-tab="winners">Winners</button>
@@ -330,6 +329,7 @@
     const adminTab = $(".fg-admin-tab", panel);
     if (adminTab) adminTab.style.display = isAdmin() ? "" : "none";
     if (activeTab === "admin" && !isAdmin()) activeTab = "overview";
+    if (activeTab === "entry") activeTab = "overview";
     panel.querySelectorAll("[data-tab]").forEach(btn => btn.classList.toggle("active", btn.dataset.tab === activeTab));
   }
 
@@ -368,7 +368,6 @@
     if (!state) return refresh();
     setTabClasses();
     if (activeTab === "overview") return renderOverview();
-    if (activeTab === "entry") return renderEntry();
     if (activeTab === "points") return renderPoints();
     if (activeTab === "rules") return renderRules();
     if (activeTab === "winners") return renderWinners();
@@ -445,12 +444,51 @@
             ${d.status === "closed" ? `<span class="fg-preview-line">Pending</span>` : ""}
             <span>Status: ${d.status === "closed" ? "Pending" : esc(d.status)}</span>
             ${d.winner_name ? `<span class="fg-winner-line">Winner: ${esc(d.winner_name)} [${esc(d.winner_player_id)}] — Admin send reward</span>` : ""}
+            ${d.status === "open" && !d.winner_name ? `
+              <div class="fg-overview-entry-box">
+                <label>Points to use</label>
+                <input class="fg-input fg-overview-entry-points" data-draw-id="${esc(d.id)}" type="number" min="${esc(d.point_cost || 1)}" max="${esc(d.max_entries_per_player || 1)}" value="${esc(d.point_cost || 1)}">
+                <div class="fg-muted">Min ${esc(d.point_cost || 1)} • Max ${esc(d.max_entries_per_player || 1)}</div>
+                <button class="fg-primary fg-overview-enter-btn" data-draw-id="${esc(d.id)}" data-title="${esc(d.title)}">Enter This Event</button>
+              </div>
+            ` : ""}
           </div>
         `).join("")}
       `;
+      attachOverviewEntryHandlers();
     } catch (e) {
       // silent overview failure
     }
+  }
+
+  function attachOverviewEntryHandlers() {
+    document.querySelectorAll(".fg-overview-enter-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        if (!user) {
+          alert("Login from the Rules tab before entering events.");
+          activeTab = "rules";
+          render();
+          return;
+        }
+        const drawId = Number(btn.dataset.drawId || 0);
+        const title = btn.dataset.title || "this event";
+        const input = document.querySelector(`.fg-overview-entry-points[data-draw-id="${drawId}"]`);
+        const pointsSpent = Number(input?.value || 0);
+        if (!drawId) return alert("Could not read event ID.");
+        if (pointsSpent <= 0) return alert("Enter at least 1 point.");
+        try {
+          btn.disabled = true;
+          btn.textContent = "Entering...";
+          await api("/api/enter", { method: "POST", body: { draw_id: drawId, points_spent: pointsSpent } });
+          alert(`Entered ${title} with ${pointsSpent} point(s).`);
+          await refresh();
+        } catch (e) {
+          alert(e.message);
+          btn.disabled = false;
+          btn.textContent = "Enter This Event";
+        }
+      });
+    });
   }
 
   function renderEntry() {
@@ -1580,6 +1618,10 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     .fg-status-pending_payment { background:#5a4315; color:#ffe49a; }
     .fg-status-expired { background:#3b1e1e; color:#ffb9b9; }
     .fg-status-rejected { background:#5a1717; color:#ff9a9a; }
+
+    .fg-tabs [data-tab="entry"] { display:none !important; }
+    .fg-overview-entry-box { margin-top:10px; padding:10px; border-radius:12px; border:1px solid rgba(255,255,255,.12); background:rgba(0,0,0,.22); }
+    .fg-overview-entry-box label { display:block; margin-bottom:6px; font-weight:800; color:#fff; }
     @media (max-width: 520px) {
       #fries-giveaway-topbar { min-height: 36px; padding: 6px 8px; gap: 7px; }
       .fg-top-text { font-size: 12px; }
