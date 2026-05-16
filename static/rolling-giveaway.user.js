@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.48
+// @version      1.0.49
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Points, Rules, Winners, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -767,10 +767,10 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
       <div class="fg-card fg-rules-card">
         <b>How Winners Are Chosen</b>
         <ul class="fg-clean-list">
-          <li>Each point used counts as entry weight.</li>
-          <li>Example: 10 points gives 10 chances in that draw.</li>
-          <li>More points improves your odds, but does not guarantee a win.</li>
-          <li>When a draw ends, the backend randomly picks from valid entries.</li>
+          <li>Winners are picked with a fair random draw.</li>
+          <li>Each valid entrant gets one equal chance in that draw.</li>
+          <li>Using more points only pays the entry cost or event limit; it does not add extra winner weight.</li>
+          <li>When a draw ends, the backend randomly picks one valid entrant.</li>
           <li>After a winner is picked, entries clear so the next draw starts fresh.</li>
           <li>The monthly rolling jackpot restarts automatically and carries rollover into the next pot.</li>
         </ul>
