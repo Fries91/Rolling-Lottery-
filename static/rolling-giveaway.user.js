@@ -411,7 +411,7 @@
             <b>Enter Rolling Jackpot</b>
             <label>Points to use</label>
             <input class="fg-input" id="fg-rolling-entry-points" type="number" min="${esc(minCost)}" max="${esc(maxCost)}" value="${esc(minCost)}">
-            <div class="fg-muted">Min ${esc(minCost)} point(s). More points = more weight.</div>
+            <div class="fg-muted">Min ${esc(minCost)} point(s) to enter.</div>
             <button class="fg-primary" id="fg-enter-rolling-jackpot">Enter Rolling Jackpot</button>
           </div>
         ` : ""}
@@ -552,7 +552,7 @@
         <p id="fg-selected-entry-status" class="fg-muted"></p>
         <label>Points to Use</label>
         <input class="fg-input" id="fg-entry-points" type="number" min="1" value="1">
-        <p class="fg-muted">Enter at least the draw cost. Extra points can add extra weight. Points are deducted when you submit the entry request.</p>
+        <p class="fg-muted">Enter at least the draw cost. Points are deducted when you submit.</p>
         <button class="fg-primary" id="fg-enter">Enter Draw</button>
       </div>
     `;
