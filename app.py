@@ -13,6 +13,7 @@ ADMIN_PLAYER_ID = int(os.environ.get("ADMIN_PLAYER_ID", "3679030"))
 DB_PATH = os.environ.get("DB_PATH", "giveaway.db")
 TORN_API_BASE = os.environ.get("TORN_API_BASE", "https://api.torn.com")
 REQUEST_TIMEOUT = float(os.environ.get("REQUEST_TIMEOUT", "12"))
+MONTH_SECONDS = 30 * 24 * 60 * 60
 POINT_REQUEST_TTL_SECONDS = int(os.environ.get("POINT_REQUEST_TTL_SECONDS", "600"))
 
 app = Flask(__name__)
@@ -710,7 +711,12 @@ def enter(s):
         if points_spent < minimum_cost:
             return jsonify({"ok": False, "error": f"This draw costs at least {minimum_cost} point(s) to enter"}), 400
 
-        max_entries = int(g["max_entries_per_player"] or 1) if "max_entries_per_player" in g.keys() else 1
+        if (g["draw_type"] if "draw_type" in g.keys() else "rolling") == "rolling":
+            max_entries = int(g["max_entries_per_player"] or 999999) if "max_entries_per_player" in g.keys() else 999999
+            if max_entries < 2:
+                max_entries = 999999
+        else:
+            max_entries = int(g["max_entries_per_player"] or 1) if "max_entries_per_player" in g.keys() else 1
         if points_spent > max_entries:
             return jsonify({"ok": False, "error": f"This draw allows max {max_entries} point entry per player"}), 400
 
@@ -809,19 +815,29 @@ def admin_save(s):
     t = now_ts()
     with db() as conn:
         g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL AND draw_type='rolling' ORDER BY id DESC LIMIT 1").fetchone()
+        if not g:
+            init_db()
+            g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL AND draw_type='rolling' ORDER BY id DESC LIMIT 1").fetchone()
+        point_cost = int(data.get("point_cost") or 1)
+        if point_cost < 1:
+            point_cost = 1
+        each_point_value = int(data.get("entry_item_value") or 0)
+        if each_point_value < 1:
+            each_point_value = int(g["entry_item_value"] or 850000)
         conn.execute("""
             UPDATE giveaways
             SET title=?, prize_label=?, base_payout=?, entry_item_name=?, entry_item_value=?,
-                rollover_pool=?, draw_at=?, updated_at=?
+                point_cost=?, max_entries_per_player=?, rollover_pool=?, updated_at=?
             WHERE id=?
         """, (
             (data.get("title") or "Fries91's Giveaway").strip(),
-            (data.get("prize_label") or "Faction/Event Prize").strip(),
+            "Rolling Jackpot",
             int(data.get("base_payout") or 0),
-            (data.get("entry_item_name") or "Xanax").strip(),
-            int(data.get("entry_item_value") or 0),
+            "Points",
+            each_point_value,
+            point_cost,
+            999999,
             int(data.get("rollover_pool") or 0),
-            int(data["draw_at"]) if str(data.get("draw_at") or "").isdigit() else None,
             t,
             g["id"],
         ))
@@ -906,9 +922,19 @@ def admin_status(s):
     status = (data.get("status") or "open").strip().lower()
     if status not in ("open", "closed", "drawn"):
         return jsonify({"ok": False, "error": "Invalid status"}), 400
+    t = now_ts()
     with db() as conn:
         g = conn.execute("SELECT * FROM giveaways WHERE deleted_at IS NULL AND draw_type='rolling' ORDER BY id DESC LIMIT 1").fetchone()
-        conn.execute("UPDATE giveaways SET status=?, updated_at=? WHERE id=?", (status, now_ts(), g["id"]))
+        if status == "open":
+            end_at = t + MONTH_SECONDS
+            conn.execute("""
+                UPDATE giveaways
+                SET status='open', start_at=?, end_at=?, draw_at=?, auto_drawn_at=NULL,
+                    winner_player_id=NULL, winner_name=NULL, max_entries_per_player=?, updated_at=?
+                WHERE id=?
+            """, (t, end_at, end_at, 999999, t, g["id"]))
+        else:
+            conn.execute("UPDATE giveaways SET status=?, updated_at=? WHERE id=?", (status, t, g["id"]))
     return jsonify({"ok": True})
 
 
@@ -1053,14 +1079,61 @@ def admin_points_adjust(s):
     return jsonify({"ok": True, "player_id": player_id, "balance": new_balance})
 
 
+def _weighted_winner(rows):
+    pool = []
+    for row in rows:
+        weight = max(1, int(row["points_spent"] or 1))
+        for _ in range(weight):
+            pool.append(row)
+    return secrets.choice(pool) if pool else None
+
+
+def _insert_next_rolling(conn, current, next_base_payout, t):
+    columns = [
+        "title", "prize_label", "total_pool", "base_payout", "entry_item_name", "entry_item_value",
+        "player_percent", "rollover_percent", "reserve_percent", "rollover_pool", "status", "draw_at",
+        "created_by", "created_at", "updated_at", "draw_type", "event_prize", "point_cost",
+        "start_at", "end_at", "auto_drawn_at", "max_entries_per_player"
+    ]
+    values = [
+        current["title"] or "Fries91's Giveaway",
+        "Rolling Jackpot",
+        0,
+        int(next_base_payout or 0),
+        "Points",
+        int(current["entry_item_value"] or 850000),
+        int(current["player_percent"] or 60),
+        int(current["rollover_percent"] or 20),
+        int(current["reserve_percent"] or 20),
+        0,
+        "open",
+        t + MONTH_SECONDS,
+        current["created_by"] if "created_by" in current.keys() else ADMIN_PLAYER_ID,
+        t,
+        t,
+        "rolling",
+        "Rolling Jackpot",
+        int(current["point_cost"] or 1) if "point_cost" in current.keys() else 1,
+        t,
+        t + MONTH_SECONDS,
+        None,
+        999999,
+    ]
+    extra_cols, extra_vals = giveaway_legacy_insert_columns(conn)
+    columns.extend(extra_cols)
+    values.extend(extra_vals)
+    placeholders = ",".join(["?"] * len(columns))
+    conn.execute(f"INSERT INTO giveaways ({','.join(columns)}) VALUES ({placeholders})", values)
+
+
 def auto_draw_ended_events(conn):
     """
-    Auto-picks winners for ended open event draws.
-    Uses approved entries weighted by points_spent.
-    Rolling jackpot is not auto-drawn here.
+    Auto-picks winners for ended event draws and the monthly rolling jackpot.
+    Rolling jackpot immediately creates the next monthly roll using the rollover cut.
     """
     t = now_ts()
-    ended = conn.execute("""
+
+    ended_events = conn.execute("""
         SELECT *
         FROM giveaways
         WHERE deleted_at IS NULL
@@ -1071,38 +1144,48 @@ def auto_draw_ended_events(conn):
           AND auto_drawn_at IS NULL
     """, (t,)).fetchall()
 
-    for g in ended:
+    ended_rolling = conn.execute("""
+        SELECT *
+        FROM giveaways
+        WHERE deleted_at IS NULL
+          AND draw_type='rolling'
+          AND status='open'
+          AND COALESCE(end_at, draw_at) IS NOT NULL
+          AND COALESCE(end_at, draw_at) <= ?
+          AND auto_drawn_at IS NULL
+        ORDER BY id ASC
+    """, (t,)).fetchall()
+
+    for g in list(ended_events) + list(ended_rolling):
         rows = conn.execute("""
             SELECT player_id, name, points_spent
             FROM entries
             WHERE giveaway_id=? AND status='approved'
         """, (g["id"],)).fetchall()
 
-        if not rows:
+        winner = _weighted_winner(rows)
+        if winner:
+            conn.execute("""
+                UPDATE giveaways
+                SET status='drawn', winner_player_id=?, winner_name=?, auto_drawn_at=?, updated_at=?
+                WHERE id=?
+            """, (winner["player_id"], winner["name"], t, t, g["id"]))
+        else:
             conn.execute("""
                 UPDATE giveaways
                 SET status='closed', auto_drawn_at=?, updated_at=?
                 WHERE id=?
             """, (t, t, g["id"]))
-            continue
 
-        pool = []
-        for row in rows:
-            weight = max(1, int(row["points_spent"] or 1))
-            for _ in range(weight):
-                pool.append(row)
-
-        winner = secrets.choice(pool)
-        conn.execute("""
-            UPDATE giveaways
-            SET status='drawn',
-                winner_player_id=?,
-                winner_name=?,
-                auto_drawn_at=?,
-                updated_at=?
-            WHERE id=?
-        """, (winner["player_id"], winner["name"], t, t, g["id"]))
-
+        if (g["draw_type"] if "draw_type" in g.keys() else "event") == "rolling":
+            active_next = conn.execute("""
+                SELECT id FROM giveaways
+                WHERE deleted_at IS NULL AND draw_type='rolling' AND status='open' AND id != ?
+                ORDER BY id DESC LIMIT 1
+            """, (g["id"],)).fetchone()
+            if not active_next:
+                payload = clean_giveaway(conn, g, True)
+                _insert_next_rolling(conn, g, int(payload.get("rollover_cut") or 0), t)
 
 
 @app.get("/api/draws")
