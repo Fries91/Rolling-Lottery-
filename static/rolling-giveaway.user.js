@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.47
+// @version      1.0.48
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Points, Rules, Winners, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -739,27 +739,52 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
       <div class="fg-hero">
         <div class="fg-kicker">RULES & LOGIN</div>
         <h2>Fries91's Giveaway</h2>
-        <div class="fg-muted">Read the rules, terms, and API key use before logging in.</div>
+        <div class="fg-muted">Simple rules, winner info, and API login.</div>
       </div>
 
-      <div class="fg-card">
+      <div class="fg-card fg-rules-card">
         <b>Rules</b>
-        <p>This giveaway app uses free/admin-granted points for event entries. Entries use points from your balance. Event entries are final once submitted. Closing, clearing, or ending an event does not refund spent points.</p>
-        <p>Admins can create event draws, activate or disable them, review point requests, and send rewards to winners after the app chooses a winner.</p>
-        <p>Users are responsible for checking event cost, max entries, and prize details before entering.</p>
+        <ul class="fg-clean-list">
+          <li>Use your points to enter open draws.</li>
+          <li>Check the cost, prize, timer, and max entry limit before entering.</li>
+          <li>Entries are final once submitted. Closed, cleared, or ended draws do not refund spent points.</li>
+          <li>Do not spam requests, bypass limits, or use another player's API key.</li>
+          <li>Admin may reject requests, adjust points, or disable entries if abuse is found.</li>
+        </ul>
       </div>
 
-      <div class="fg-card">
+      <div class="fg-card fg-rules-card">
         <b>Terms of Service</b>
-        <p>By using this app, you understand this is a player-made Torn helper and not an official Torn feature. Rewards are handled manually by the admin. The app records your Torn name, Torn ID, point balance, entries, point requests, and winner history for this giveaway system.</p>
-        <p>Do not abuse the app, spam point requests, try to bypass limits, or use another player's API key. Admin may remove points, disable events, clear events, or reject point requests when needed.</p>
+        <ul class="fg-clean-list">
+          <li>This is a player-made Torn helper, not an official Torn feature.</li>
+          <li>Rewards are sent manually by Fries91/admin after winners are chosen.</li>
+          <li>The app records your Torn name, Torn ID, points, entries, requests, and winner history.</li>
+          <li>Using the app means you accept the draw rules shown in the app.</li>
+          <li>Admin decisions are final for abuse, errors, duplicate requests, or invalid entries.</li>
+        </ul>
       </div>
 
-      <div class="fg-card">
-        <b>API Key Use & Torn Rules</b>
-        <p>Your API key is used only to confirm your Torn identity, name, and player ID during login. The app does not need your password and should never ask for it.</p>
-        <p>The key is stored locally in your browser/PDA storage so you do not need to paste it every time. The input is masked when typed. Use a limited Torn API key where possible.</p>
-        <p>This app is designed to follow Torn's expectations by using the API for identity/login and app data only, not for automation that plays the game for you. You can remove the saved key from your browser/PDA storage by clearing site/script data.</p>
+      <div class="fg-card fg-rules-card">
+        <b>How Winners Are Chosen</b>
+        <ul class="fg-clean-list">
+          <li>Each point used counts as entry weight.</li>
+          <li>Example: 10 points gives 10 chances in that draw.</li>
+          <li>More points improves your odds, but does not guarantee a win.</li>
+          <li>When a draw ends, the backend randomly picks from valid entries.</li>
+          <li>After a winner is picked, entries clear so the next draw starts fresh.</li>
+          <li>The monthly rolling jackpot restarts automatically and carries rollover into the next pot.</li>
+        </ul>
+      </div>
+
+      <div class="fg-card fg-rules-card">
+        <b>API Key Use</b>
+        <ul class="fg-clean-list">
+          <li>Your Torn API key is used to confirm your Torn name and player ID.</li>
+          <li>The app never needs your Torn password.</li>
+          <li>The input is masked, and pasted spaces/new lines are removed before login.</li>
+          <li>Use a Limited API key when possible.</li>
+          <li>You can clear your saved key/session with the button below.</li>
+        </ul>
       </div>
 
       <div class="fg-card private">
@@ -785,7 +810,7 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
         activeTab = "overview";
         render();
       } catch (e) {
-        alert(e.message || "Login failed. Try making a fresh Limited Torn API key.");
+        alert(e.message);
       }
     });
 
@@ -1595,9 +1620,13 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     .fg-tabs button { flex:1; padding: 9px 8px; border-radius: 10px; border:1px solid rgba(255,255,255,.12); background:#202333; color:#e9e3ff; cursor:pointer; }
     .fg-tabs button.active { background:#6b38b6; border-color:#9c6cff; }
     .fg-body { padding: 12px; overflow:auto; max-height: calc(100vh - 180px); }
-    .fg-hero { padding:24px 18px 18px; border-radius:18px; background: radial-gradient(circle at top left,#7143bd,#21152f 55%); border:1px solid rgba(255,255,255,.16); margin-bottom: 10px; }
-    .fg-kicker { font-size:11px; letter-spacing:.1em; display:block; margin-bottom:10px; line-height:1.2; color:#d7c6ff; }
-    .fg-hero h2 { margin: 0 0 12px; font-size: 22px; line-height:1.15; }
+    .fg-hero { padding:32px 18px 18px; border-radius:18px; background: radial-gradient(circle at top left,#7143bd,#21152f 55%); border:1px solid rgba(255,255,255,.16); margin-bottom: 10px; }
+    .fg-kicker { font-size:11px; letter-spacing:.1em; display:block; margin-bottom:16px; line-height:1.25; color:#d7c6ff; }
+    .fg-hero h2 { margin: 6px 0 12px; font-size: 22px; line-height:1.22; }
+
+    .fg-rules-card { padding:14px 14px 12px; }
+    .fg-clean-list { margin:8px 0 0; padding-left:18px; color:#f4f6ff; font-size:13px; line-height:1.35; }
+    .fg-clean-list li { margin:5px 0; }
     .fg-big { font-size: 32px; font-weight: 900; }
     .fg-subline { margin-top:6px; font-size:16px; font-weight:800; color:#f4f2ff; }
     .fg-subline.small { font-size:13px; color:#c8c0dc; }
