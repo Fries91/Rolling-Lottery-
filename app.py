@@ -857,14 +857,10 @@ def admin_draw(s):
         if not rows:
             return jsonify({"ok": False, "error": "No approved entries to draw"}), 400
 
-        pool = []
-        for row in rows:
-            weight = max(1, int(row["points_spent"] or 1))
-            for _ in range(weight):
-                pool.append(row)
-
+        # Fair random draw: every valid entrant gets one equal chance.
+        # Points are the entry cost only, not extra winner weight.
         t = now_ts()
-        winner = secrets.choice(pool)
+        winner = secrets.choice(list(rows))
         conn.execute("UPDATE giveaways SET status='drawn', winner_player_id=?, winner_name=?, auto_drawn_at=?, updated_at=? WHERE id=?",
                      (winner["player_id"], winner["name"], t, t, g["id"]))
         clear_entries_after_draw(conn, g["id"])
@@ -1093,13 +1089,13 @@ def admin_points_adjust(s):
     return jsonify({"ok": True, "player_id": player_id, "balance": new_balance})
 
 
-def _weighted_winner(rows):
-    pool = []
-    for row in rows:
-        weight = max(1, int(row["points_spent"] or 1))
-        for _ in range(weight):
-            pool.append(row)
-    return secrets.choice(pool) if pool else None
+def _random_winner(rows):
+    """
+    Fair random draw: every approved entrant has one equal chance.
+    Points are the cost to enter, not extra winner weight.
+    """
+    rows = list(rows or [])
+    return secrets.choice(rows) if rows else None
 
 
 def clear_entries_after_draw(conn, giveaway_id):
@@ -1185,7 +1181,7 @@ def auto_draw_ended_events(conn):
             WHERE giveaway_id=? AND status='approved'
         """, (g["id"],)).fetchall()
 
-        winner = _weighted_winner(rows)
+        winner = _random_winner(rows)
         if winner:
             conn.execute("""
                 UPDATE giveaways
