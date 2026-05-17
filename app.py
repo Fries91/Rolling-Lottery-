@@ -9,6 +9,9 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 APP_NAME = "Fries91's Giveaway"
+WELCOME_BONUS_POINTS = 2
+REFERRAL_REQUIRED_POINTS = 5
+REFERRAL_REWARD_POINTS = 10
 ADMIN_PLAYER_ID = int(os.environ.get("ADMIN_PLAYER_ID", "3679030"))
 DB_PATH = os.environ.get("DB_PATH", "giveaway.db")
 TORN_API_BASE = os.environ.get("TORN_API_BASE", "https://api.torn.com")
@@ -344,6 +347,7 @@ def init_db():
         ensure_points(conn)
         ensure_point_requests(conn)
         ensure_point_conversion_items(conn)
+        ensure_referrals(conn)
 
         if "player_id" in cols(conn, "sessions") and "player_id" in cols(conn, "users"):
             conn.execute("DELETE FROM sessions WHERE player_id NOT IN (SELECT player_id FROM users)")
@@ -564,6 +568,174 @@ def add_points(conn, player_id, name, amount, reason, created_by=None):
     return new_balance
 
 
+def ensure_referrals(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS referral_codes (
+            player_id INTEGER PRIMARY KEY,
+            code TEXT NOT NULL UNIQUE,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS referral_links (
+            referred_player_id INTEGER PRIMARY KEY,
+            referrer_player_id INTEGER NOT NULL,
+            code TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            rewarded_at INTEGER,
+            reward_points INTEGER NOT NULL DEFAULT 10
+        )
+    """)
+    add_col(conn, "referral_links", "rewarded_at", "rewarded_at INTEGER")
+    add_col(conn, "referral_links", "reward_points", "reward_points INTEGER NOT NULL DEFAULT 10")
+
+
+def make_referral_code(conn, player_id):
+    ensure_referrals(conn)
+    player_id = int(player_id)
+    row = conn.execute("SELECT code FROM referral_codes WHERE player_id=?", (player_id,)).fetchone()
+    if row:
+        return row["code"]
+    # Short, unique, easy to paste in Torn chat/forum.
+    for _ in range(20):
+        code = f"F91{player_id}{secrets.token_hex(2).upper()}"
+        try:
+            conn.execute(
+                "INSERT INTO referral_codes (player_id, code, created_at) VALUES (?, ?, ?)",
+                (player_id, code, now_ts())
+            )
+            return code
+        except sqlite3.IntegrityError:
+            continue
+    raise ValueError("Could not create referral code")
+
+
+def referral_status(conn, player_id):
+    ensure_referrals(conn)
+    code = make_referral_code(conn, player_id)
+    link = conn.execute("""
+        SELECT rl.referrer_player_id, rl.code, rl.created_at, rl.rewarded_at, rl.reward_points, u.name AS referrer_name
+        FROM referral_links rl
+        LEFT JOIN users u ON u.player_id = rl.referrer_player_id
+        WHERE rl.referred_player_id=?
+    """, (int(player_id),)).fetchone()
+    earned = conn.execute("""
+        SELECT COUNT(*) AS c, COALESCE(SUM(reward_points), 0) AS pts
+        FROM referral_links
+        WHERE referrer_player_id=? AND rewarded_at IS NOT NULL
+    """, (int(player_id),)).fetchone()
+    pending = conn.execute("""
+        SELECT COUNT(*) AS c
+        FROM referral_links
+        WHERE referrer_player_id=? AND rewarded_at IS NULL
+    """, (int(player_id),)).fetchone()
+    return {
+        "code": code,
+        "reward_points": REFERRAL_REWARD_POINTS,
+        "required_points": REFERRAL_REQUIRED_POINTS,
+        "referred_by": dict(link) if link else None,
+        "earned_count": int(earned["c"] or 0),
+        "earned_points": int(earned["pts"] or 0),
+        "pending_count": int(pending["c"] or 0),
+    }
+
+
+def maybe_award_referral_bonus(conn, referred_player_id, created_by=None):
+    ensure_referrals(conn)
+    ensure_point_requests(conn)
+    referred_player_id = int(referred_player_id)
+    link = conn.execute(
+        "SELECT * FROM referral_links WHERE referred_player_id=?",
+        (referred_player_id,)
+    ).fetchone()
+    if not link or link["rewarded_at"]:
+        return False
+
+    approved_points = conn.execute("""
+        SELECT COALESCE(SUM(amount), 0) AS total
+        FROM point_requests
+        WHERE player_id=? AND status='approved'
+    """, (referred_player_id,)).fetchone()["total"] or 0
+    if int(approved_points) < REFERRAL_REQUIRED_POINTS:
+        return False
+
+    referrer = conn.execute(
+        "SELECT player_id, name FROM users WHERE player_id=?",
+        (int(link["referrer_player_id"]),)
+    ).fetchone()
+    if not referrer:
+        return False
+
+    referred = conn.execute(
+        "SELECT name FROM users WHERE player_id=?",
+        (referred_player_id,)
+    ).fetchone()
+    referred_name = (referred["name"] if referred else f"Player {referred_player_id}")
+
+    add_points(
+        conn,
+        int(referrer["player_id"]),
+        referrer["name"],
+        REFERRAL_REWARD_POINTS,
+        f"referral bonus: {referred_name} received {REFERRAL_REQUIRED_POINTS} points",
+        created_by
+    )
+    conn.execute(
+        "UPDATE referral_links SET rewarded_at=?, reward_points=? WHERE referred_player_id=?",
+        (now_ts(), REFERRAL_REWARD_POINTS, referred_player_id)
+    )
+    return True
+
+
+
+
+def award_welcome_bonus_if_needed(conn, player_id, name, created_by=None):
+    """Give the one-time welcome bonus when a Torn user logs in for the first time."""
+    ensure_points(conn)
+    player_id = int(player_id)
+    existing = conn.execute(
+        "SELECT id FROM point_ledger WHERE player_id=? AND reason=? LIMIT 1",
+        (player_id, "welcome bonus")
+    ).fetchone()
+    if existing:
+        return False
+    add_points(conn, player_id, name, WELCOME_BONUS_POINTS, "welcome bonus", created_by)
+    return True
+
+
+def user_can_use_referral(conn, player_id):
+    """Referral codes are for new app users only. Allow users with no real app activity yet.
+
+    Welcome bonus does not count as activity, so a fresh user can still paste a code after first login.
+    """
+    player_id = int(player_id)
+    ensure_points(conn)
+    ensure_point_requests(conn)
+    ensure_entries(conn)
+
+    row = conn.execute("SELECT created_at FROM users WHERE player_id=?", (player_id,)).fetchone()
+    if row and int(row["created_at"] or 0) and now_ts() - int(row["created_at"] or 0) > 60 * 60 * 24 * 7:
+        return False, "Referral codes are for new users only"
+
+    used_entries = conn.execute("SELECT COUNT(*) AS c FROM entries WHERE player_id=?", (player_id,)).fetchone()["c"] or 0
+    if int(used_entries) > 0:
+        return False, "Referral codes are for new users before entering draws"
+
+    requests = conn.execute("SELECT COUNT(*) AS c FROM point_requests WHERE player_id=?", (player_id,)).fetchone()["c"] or 0
+    if int(requests) > 0:
+        return False, "Referral codes are for new users before requesting item points"
+
+    non_welcome = conn.execute("""
+        SELECT COUNT(*) AS c
+        FROM point_ledger
+        WHERE player_id=? AND reason NOT IN ('welcome bonus')
+    """, (player_id,)).fetchone()["c"] or 0
+    if int(non_welcome) > 0:
+        return False, "Referral codes are for new users only"
+
+    return True, ""
+
+
 def today_key():
     return time.strftime("%Y-%m-%d", time.gmtime(now_ts()))
 
@@ -591,7 +763,7 @@ def health():
 @app.post("/api/login")
 def api_login():
     data = request.get_json(force=True, silent=True) or {}
-    key = (data.get("api_key") or "").strip()
+    key = "".join((data.get("api_key") or "").split())
     if not key:
         return jsonify({"ok": False, "error": "API key required"}), 400
 
@@ -628,9 +800,12 @@ def api_login():
     token = secrets.token_urlsafe(32)
     t = now_ts()
 
+    welcome_awarded = False
     with db() as conn:
         ensure_users(conn)
         ensure_sessions(conn)
+        ensure_points(conn)
+        existing_user = conn.execute("SELECT player_id FROM users WHERE player_id=?", (pid,)).fetchone()
         conn.execute("""
             INSERT INTO users (player_id, name, api_key, is_admin, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -640,10 +815,12 @@ def api_login():
                 is_admin=excluded.is_admin,
                 updated_at=excluded.updated_at
         """, (pid, name, key, is_admin, t, t))
+        if not existing_user:
+            welcome_awarded = award_welcome_bonus_if_needed(conn, pid, name, ADMIN_PLAYER_ID)
         conn.execute("INSERT INTO sessions (token, player_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
                      (token, pid, t + 60 * 60 * 24 * 30, t))
 
-    return jsonify({"ok": True, "token": token, "user": {"player_id": pid, "name": name, "is_admin": bool(is_admin)}})
+    return jsonify({"ok": True, "token": token, "welcome_bonus_awarded": welcome_awarded, "welcome_bonus_points": WELCOME_BONUS_POINTS, "user": {"player_id": pid, "name": name, "is_admin": bool(is_admin)}})
 
 
 @app.get("/api/state")
@@ -857,10 +1034,14 @@ def admin_draw(s):
         if not rows:
             return jsonify({"ok": False, "error": "No approved entries to draw"}), 400
 
-        # Fair random draw: every valid entrant gets one equal chance.
-        # Points are the entry cost only, not extra winner weight.
+        pool = []
+        for row in rows:
+            weight = max(1, int(row["points_spent"] or 1))
+            for _ in range(weight):
+                pool.append(row)
+
         t = now_ts()
-        winner = secrets.choice(list(rows))
+        winner = secrets.choice(pool)
         conn.execute("UPDATE giveaways SET status='drawn', winner_player_id=?, winner_name=?, auto_drawn_at=?, updated_at=? WHERE id=?",
                      (winner["player_id"], winner["name"], t, t, g["id"]))
         clear_entries_after_draw(conn, g["id"])
@@ -953,6 +1134,54 @@ def api_point_conversions():
     with db() as conn:
         payload = point_conversion_payload(conn)
     return jsonify({"ok": True, "conversion": payload})
+
+
+@app.get("/api/referral")
+@login_required
+def api_referral(s):
+    with db() as conn:
+        payload = referral_status(conn, int(s["player_id"]))
+    return jsonify({"ok": True, "referral": payload})
+
+
+@app.post("/api/referral/use")
+@login_required
+def api_use_referral(s):
+    data = request.get_json(force=True, silent=True) or {}
+    code = (data.get("code") or "").strip().upper().replace(" ", "")
+    if not code:
+        return jsonify({"ok": False, "error": "Enter a referral code first"}), 400
+
+    with db() as conn:
+        ensure_referrals(conn)
+        make_referral_code(conn, int(s["player_id"]))
+        existing = conn.execute(
+            "SELECT * FROM referral_links WHERE referred_player_id=?",
+            (int(s["player_id"]),)
+        ).fetchone()
+        if existing:
+            return jsonify({"ok": False, "error": "You already used a referral code"}), 400
+
+        allowed, why_not = user_can_use_referral(conn, int(s["player_id"]))
+        if not allowed:
+            return jsonify({"ok": False, "error": why_not or "Referral codes are for new users only"}), 400
+
+        ref = conn.execute(
+            "SELECT player_id, code FROM referral_codes WHERE UPPER(code)=?",
+            (code,)
+        ).fetchone()
+        if not ref:
+            return jsonify({"ok": False, "error": "Referral code not found"}), 404
+        if int(ref["player_id"]) == int(s["player_id"]):
+            return jsonify({"ok": False, "error": "You cannot use your own referral code"}), 400
+
+        conn.execute("""
+            INSERT INTO referral_links (referred_player_id, referrer_player_id, code, created_at)
+            VALUES (?, ?, ?, ?)
+        """, (int(s["player_id"]), int(ref["player_id"]), ref["code"], now_ts()))
+        payload = referral_status(conn, int(s["player_id"]))
+
+    return jsonify({"ok": True, "referral": payload, "message": "Referral code saved"})
 
 
 @app.get("/api/points")
@@ -1089,13 +1318,13 @@ def admin_points_adjust(s):
     return jsonify({"ok": True, "player_id": player_id, "balance": new_balance})
 
 
-def _random_winner(rows):
-    """
-    Fair random draw: every approved entrant has one equal chance.
-    Points are the cost to enter, not extra winner weight.
-    """
-    rows = list(rows or [])
-    return secrets.choice(rows) if rows else None
+def _weighted_winner(rows):
+    pool = []
+    for row in rows:
+        weight = max(1, int(row["points_spent"] or 1))
+        for _ in range(weight):
+            pool.append(row)
+    return secrets.choice(pool) if pool else None
 
 
 def clear_entries_after_draw(conn, giveaway_id):
@@ -1181,7 +1410,7 @@ def auto_draw_ended_events(conn):
             WHERE giveaway_id=? AND status='approved'
         """, (g["id"],)).fetchall()
 
-        winner = _random_winner(rows)
+        winner = _weighted_winner(rows)
         if winner:
             conn.execute("""
                 UPDATE giveaways
@@ -1798,6 +2027,7 @@ def verify_point_request_from_torn(conn, row, reviewer_id=None):
             SET status='approved', reviewed_by=?, reviewed_at=?, matched_log_id=?, matched_log_time=?, verify_note=?
             WHERE id=?
         """, (reviewer_id or ADMIN_PLAYER_ID, now_ts(), log_id, log_time or now_ts(), note, row["id"]))
+        maybe_award_referral_bonus(conn, int(row["player_id"]), reviewer_id or ADMIN_PLAYER_ID)
         return {"approved": True, "matched_log_id": log_id, "note": note}
 
     conn.execute("UPDATE point_requests SET verify_note=? WHERE id=?", ("No matching item send found yet.", row["id"]))
@@ -1953,6 +2183,8 @@ def admin_points_request_action(s):
             SET status=?, reviewed_by=?, reviewed_at=?, verify_note=?
             WHERE id=?
         """, (new_status, int(s["player_id"]), now_ts(), "Manual " + new_status, request_id))
+        if action == "approve":
+            maybe_award_referral_bonus(conn, int(row["player_id"]), int(s["player_id"]))
 
     return jsonify({"ok": True, "status": new_status})
 
