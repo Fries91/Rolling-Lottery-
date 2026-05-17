@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.53
+// @version      1.0.54
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Points, Rules, Winners, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -270,6 +270,75 @@
     }
   }
 
+
+  function makePanelDraggable(panel) {
+    if (!panel || panel.dataset.dragReady === "1") return;
+    panel.dataset.dragReady = "1";
+    const head = panel.querySelector(".fg-head");
+    if (!head) return;
+
+    const saved = JSON.parse(localStorage.getItem("fries91_giveaway_panel_pos_v1") || "null");
+    if (saved && Number.isFinite(saved.left) && Number.isFinite(saved.top)) {
+      panel.style.setProperty("left", Math.max(6, Math.min(saved.left, window.innerWidth - 80)) + "px", "important");
+      panel.style.setProperty("top", Math.max(6, Math.min(saved.top, window.innerHeight - 80)) + "px", "important");
+      panel.style.setProperty("right", "auto", "important");
+      panel.style.setProperty("transform", "none", "important");
+    }
+
+    let dragging = false;
+    let startX = 0;
+    let startY = 0;
+    let startLeft = 0;
+    let startTop = 0;
+
+    const getPoint = (ev) => ev.touches && ev.touches[0] ? ev.touches[0] : ev;
+
+    const down = (ev) => {
+      if (ev.target && ev.target.closest && ev.target.closest("button,input,select,textarea")) return;
+      const pt = getPoint(ev);
+      const rect = panel.getBoundingClientRect();
+      dragging = true;
+      startX = pt.clientX;
+      startY = pt.clientY;
+      startLeft = rect.left;
+      startTop = rect.top;
+      panel.classList.add("fg-dragging");
+      panel.style.setProperty("left", rect.left + "px", "important");
+      panel.style.setProperty("top", rect.top + "px", "important");
+      panel.style.setProperty("right", "auto", "important");
+      panel.style.setProperty("transform", "none", "important");
+      ev.preventDefault();
+    };
+
+    const move = (ev) => {
+      if (!dragging) return;
+      const pt = getPoint(ev);
+      const rect = panel.getBoundingClientRect();
+      const maxLeft = Math.max(6, window.innerWidth - rect.width - 6);
+      const maxTop = Math.max(6, window.innerHeight - 70);
+      const left = Math.max(6, Math.min(maxLeft, startLeft + pt.clientX - startX));
+      const top = Math.max(6, Math.min(maxTop, startTop + pt.clientY - startY));
+      panel.style.setProperty("left", left + "px", "important");
+      panel.style.setProperty("top", top + "px", "important");
+      ev.preventDefault();
+    };
+
+    const up = () => {
+      if (!dragging) return;
+      dragging = false;
+      panel.classList.remove("fg-dragging");
+      const rect = panel.getBoundingClientRect();
+      localStorage.setItem("fries91_giveaway_panel_pos_v1", JSON.stringify({ left: Math.round(rect.left), top: Math.round(rect.top) }));
+    };
+
+    head.addEventListener("mousedown", down);
+    head.addEventListener("touchstart", down, { passive: false });
+    window.addEventListener("mousemove", move, { passive: false });
+    window.addEventListener("touchmove", move, { passive: false });
+    window.addEventListener("mouseup", up);
+    window.addEventListener("touchend", up);
+  }
+
   function ensurePanel() {
     if ($("#fries-giveaway-panel")) return;
     const panel = document.createElement("div");
@@ -292,6 +361,7 @@
       <div class="fg-body"></div>
     `;
     document.body.appendChild(panel);
+    makePanelDraggable(panel);
     $(".fg-close", panel).addEventListener("click", () => panel.classList.remove("open"));
     panel.querySelectorAll("[data-tab]").forEach(btn => {
       btn.addEventListener("click", () => {
@@ -1612,7 +1682,8 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     .fg-top-marquee { color: #d9d1f5; font-size: 12px; white-space: nowrap; opacity: .95; overflow: hidden; text-overflow: ellipsis; }
     #fries-giveaway-panel { position: fixed; right: 12px; top: 70px; z-index: 999999; width: min(430px, calc(100vw - 24px)); max-height: calc(100vh - 58px); display: none; overflow: hidden; border-radius: 18px; background: #11131a; color: #f4f2ff; border: 1px solid rgba(255,255,255,.16); box-shadow: 0 18px 60px rgba(0,0,0,.55); font-family: Arial, sans-serif; }
     #fries-giveaway-panel.open { display: block; }
-    .fg-head { display:flex; align-items:center; justify-content:space-between; padding: 14px; background: linear-gradient(135deg,#1b102b,#301a50); }
+    .fg-head { display:flex; align-items:center; justify-content:space-between; padding: 14px; background: linear-gradient(135deg,#1b102b,#301a50); cursor: move; touch-action: none; }
+    #fries-giveaway-panel.fg-dragging { user-select: none !important; opacity: .96; }
     .fg-title { font-weight: 800; font-size: 18px; }
     .fg-sub, .fg-muted { color: #c8c0dc; font-size: 12px; }
     .fg-close { background: transparent; color: white; border: 0; font-size: 28px; cursor:pointer; }
@@ -1677,7 +1748,7 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
       /* PC / Firefox: lock launcher under Torn's ticker instead of letting page containers/sidebar move it */
       #fries-giveaway-page-header {
         position: fixed !important;
-        top: 174px !important;
+        top: 78px !important;
         left: 50% !important;
         right: auto !important;
         transform: translateX(-50%) !important;
