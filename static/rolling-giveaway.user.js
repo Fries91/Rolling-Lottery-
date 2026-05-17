@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.31
-// @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
+// @version      1.0.58
+// @description  Fries91 giveaway overlay for Torn with points, events, rules, admin controls, and PDA/PC support.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @match        https://*.torn.com/*
