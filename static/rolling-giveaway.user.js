@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.51
-// @description  Free-entry rolling giveaway overlay for Torn. Overview, Entry, Admin tabs.
+// @version      1.0.52
+// @description  Free-entry rolling giveaway overlay for Torn. Overview, Points, Rules, Winners, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @match        https://*.torn.com/*
@@ -73,10 +73,9 @@
     const base = Math.max(1, Number(c.base_value || 850000));
     const items = c.items || [];
     if (!items.length) {
-      return `<div class="fg-muted">No point conversion items set yet.</div>`;
+      return `<div class="fg-muted">No items set yet.</div>`;
     }
     return `
-      <div class="fg-muted">1 point = ${money(base)} value. Item values are rounded down.</div>
       <table class="fg-point-table">
         <thead><tr><th>Item</th><th>Value</th><th>Points</th></tr></thead>
         <tbody>
@@ -89,6 +88,71 @@
           `).join("")}
         </tbody>
       </table>
+    `;
+  }
+
+
+  function conversionOptionsHtml(conversion) {
+    const items = (conversion && conversion.items) || [];
+    return items.map(item => `<option value="${esc(item.name)}" data-value="${esc(item.value)}">${esc(item.name)} — ${money(item.value)} = ${esc(item.points)} pts</option>`).join("");
+  }
+
+  function calcRequestPreview(conversion) {
+    const sel = $("#fg-request-item");
+    const qtyEl = $("#fg-request-item-qty");
+    const box = $("#fg-request-preview");
+    if (!sel || !qtyEl || !box) return;
+    const itemName = sel.value;
+    const qty = Math.max(1, Number(qtyEl.value || 1));
+    const c = conversion || {};
+    const base = Math.max(1, Number(c.base_value || 820000));
+    const item = ((c.items || []).find(x => String(x.name) === String(itemName))) || null;
+    if (!item) {
+      box.innerHTML = `<span class="fg-muted">Pick an item.</span>`;
+      return;
+    }
+    const total = Number(item.value || 0) * qty;
+    const pts = Math.floor(total / base);
+    box.innerHTML = `
+      <div class="fg-calc-line"><b>${esc(qty)} × ${esc(item.name)}</b><span>${money(total)}</span></div>
+      <div class="fg-calc-line"><b>Points</b><span>${pts.toLocaleString()} pts</span></div>
+      <div class="fg-warnline">Send item(s) to Fries91 [3679030], then tap Verify within 10 minutes.</div>
+    `;
+  }
+
+  function requestTimeLeft(expiresAt) {
+    if (!expiresAt) return "10 minutes";
+    const diff = Number(expiresAt) * 1000 - Date.now();
+    if (diff <= 0) return "Expired";
+    const mins = Math.floor(diff / 60000);
+    const secs = Math.floor((diff % 60000) / 1000);
+    return `${mins}:${String(secs).padStart(2, "0")} left`;
+  }
+
+  function requestIsExpired(r) {
+    return r.expires_at && (Number(r.expires_at) * 1000 <= Date.now());
+  }
+
+  function requestLine(r) {
+    const itemBits = r.item_name
+      ? `${esc(r.item_qty || 1)} × ${esc(r.item_name)} • ${money(r.total_value || 0)} → ${esc(r.amount)} pts`
+      : `${esc(r.amount)} pts`;
+    const open = (r.status === "pending_payment" || r.status === "pending") && !requestIsExpired(r);
+    const verifyBtn = open
+      ? `<button data-verify-request="${esc(r.id)}" class="fg-mini good">Verify</button>`
+      : "";
+    const expiryLine = (r.status === "pending_payment" || r.status === "pending")
+      ? `<div class="fg-warnline">Time left: ${esc(requestTimeLeft(r.expires_at))}</div>`
+      : "";
+    return `
+      <div class="fg-entry">
+        <b>${itemBits}</b>
+        <div>${statusPill(requestIsExpired(r) && (r.status === "pending_payment" || r.status === "pending") ? "expired" : r.status)}</div>
+        ${expiryLine}
+        ${r.verify_note ? `<div class="fg-muted">${esc(r.verify_note)}</div>` : ""}
+        ${r.matched_log_id ? `<div class="fg-muted">Matched log: ${esc(r.matched_log_id)}</div>` : ""}
+        ${verifyBtn ? `<div class="fg-entry-actions one">${verifyBtn}</div>` : ""}
+      </div>
     `;
   }
 
@@ -133,21 +197,77 @@
     }
   }
 
+  function isVisible(el) {
+    if (!el || !el.isConnected) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity || 1) === 0) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 40 && r.height > 8 && r.bottom > 0 && r.top < window.innerHeight;
+  }
+
+  function findTornPageHeaderMount() {
+    const selectors = [
+      "#mainContainer",
+      "#main-container",
+      "#content",
+      "#content-wrapper",
+      ".content-wrapper",
+      ".contentWrapper",
+      ".main-content",
+      ".mainContent",
+      "main",
+      "[class*='content-wrapper']",
+      "[class*='ContentWrapper']"
+    ];
+
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (el && el.isConnected && !el.closest("#fries-giveaway-panel") && !el.closest("#fries-giveaway-page-header")) {
+        return el;
+      }
+    }
+
+    const title = Array.from(document.querySelectorAll("h1,h2,.title,[class*='title'],[class*='Title']"))
+      .find(el => isVisible(el) && !el.closest("#fries-giveaway-panel") && !el.closest("#fries-giveaway-page-header"));
+    if (title && title.parentElement && title.parentElement.parentElement) {
+      return title.parentElement.parentElement;
+    }
+
+    return document.body;
+  }
+
+  function mountGiveawayPageHeader() {
+    if (!document.body) return false;
+
+    let header = $("#fries-giveaway-page-header");
+    if (!header) {
+      header = document.createElement("div");
+      header.id = "fries-giveaway-page-header";
+      header.innerHTML = `
+        <button id="fries-giveaway-topbar" type="button" title="Open Fries91's Giveaway">
+          <span class="fg-top-icon">🏆</span>
+          <span class="fg-top-text">FRIES91'S GIVEAWAY</span>
+          <span class="fg-top-marquee">Current Jackpot loading...</span>
+        </button>
+      `;
+      header.querySelector("#fries-giveaway-topbar")?.addEventListener("click", togglePanel);
+    }
+
+    const mount = findTornPageHeaderMount();
+    if (!mount) return false;
+
+    if (header.parentElement !== mount || mount.firstChild !== header) {
+      mount.insertBefore(header, mount.firstChild || null);
+    }
+    return true;
+  }
+
   function ensureButton() {
-    if ($("#fries-giveaway-topbar")) return;
-    const bar = document.createElement("button");
-    bar.id = "fries-giveaway-topbar";
-    bar.type = "button";
-    bar.title = "Open Fries91's Giveaway";
-    bar.innerHTML = `
-      <span class="fg-top-icon">🏆</span>
-      <span class="fg-top-text">FRIES91'S GIVEAWAY</span>
-      <span class="fg-top-marquee">Current Jackpot loading...</span>
-    `;
-    bar.addEventListener("click", togglePanel);
-    document.body.appendChild(bar);
-    updateTopbarJackpot();
-    silentTopbarRefresh();
+    const mounted = mountGiveawayPageHeader();
+    if (mounted) {
+      updateTopbarJackpot();
+      silentTopbarRefresh();
+    }
   }
 
   function ensurePanel() {
@@ -158,13 +278,12 @@
       <div class="fg-head">
         <div>
           <div class="fg-title">🎁 Fries91's Giveaway</div>
-          <div class="fg-sub">Rolling jackpot • Admin approval required</div>
+          <div class="fg-sub">Monthly rolling jackpot • Points entry</div>
         </div>
         <button class="fg-close">×</button>
       </div>
       <div class="fg-tabs">
         <button data-tab="overview">Overview</button>
-        <button data-tab="entry">Entry</button>
         <button data-tab="points">Points</button>
         <button data-tab="rules">Rules</button>
         <button data-tab="winners">Winners</button>
@@ -210,6 +329,7 @@
     const adminTab = $(".fg-admin-tab", panel);
     if (adminTab) adminTab.style.display = isAdmin() ? "" : "none";
     if (activeTab === "admin" && !isAdmin()) activeTab = "overview";
+    if (activeTab === "entry") activeTab = "overview";
     panel.querySelectorAll("[data-tab]").forEach(btn => btn.classList.toggle("active", btn.dataset.tab === activeTab));
   }
 
@@ -248,7 +368,6 @@
     if (!state) return refresh();
     setTabClasses();
     if (activeTab === "overview") return renderOverview();
-    if (activeTab === "entry") return renderEntry();
     if (activeTab === "points") return renderPoints();
     if (activeTab === "rules") return renderRules();
     if (activeTab === "winners") return renderWinners();
@@ -276,6 +395,9 @@
   function renderOverview() {
     const g = state;
     setTabClasses();
+    const openRolling = g.status === "open" && !g.winner_name;
+    const minCost = Number(g.point_cost || 1);
+    const maxCost = Number(g.max_entries_per_player || 999999);
     $(".fg-body").innerHTML = `
       <div class="fg-hero">
         <div class="fg-kicker">${esc(g.status).toUpperCase()}</div>
@@ -283,14 +405,43 @@
         <div class="fg-big">${money(g.total_pool)}</div>
         <div class="fg-subline">Players Cut: ${money(g.player_cut)}</div>
         <div class="fg-subline small">Next Pot: ${money(g.next_starting_jackpot || g.rollover_cut || 0)}</div>
+        <div class="fg-subline small">Ends: ${esc(fmtTime(g.end_at || g.draw_at))} • ${esc(countdownText(g.end_at || g.draw_at))}</div>
+        ${openRolling ? `
+          <div class="fg-overview-entry-box fg-rolling-entry-box">
+            <b>Enter Rolling Jackpot</b>
+            <label>Points to use</label>
+            <input class="fg-input" id="fg-rolling-entry-points" type="number" min="${esc(minCost)}" max="${esc(maxCost)}" value="${esc(minCost)}">
+            <div class="fg-muted">Min ${esc(minCost)} point(s) to enter.</div>
+            <button class="fg-primary" id="fg-enter-rolling-jackpot">Enter Rolling Jackpot</button>
+          </div>
+        ` : ""}
       </div>
 
       <div id="fg-event-overview-boxes"></div>
       <button class="fg-secondary" id="fg-refresh">Refresh</button>
     `;
     $("#fg-refresh").addEventListener("click", refresh);
+    $("#fg-enter-rolling-jackpot")?.addEventListener("click", enterRollingJackpot);
     renderEventOverviewBoxes();
     updateTopbarJackpot();
+  }
+
+  async function enterRollingJackpot() {
+    if (!user) {
+      alert("Login from the Rules tab before entering.");
+      activeTab = "rules";
+      render();
+      return;
+    }
+    const pointsSpent = Number($("#fg-rolling-entry-points")?.value || 0);
+    if (pointsSpent <= 0) return alert("Enter at least 1 point.");
+    try {
+      await api("/api/enter", { method: "POST", body: { draw_id: state.id, points_spent: pointsSpent } });
+      alert(`Entered rolling jackpot with ${pointsSpent} point(s).`);
+      await refresh();
+    } catch (e) {
+      alert(e.message);
+    }
   }
 
   async function renderEventOverviewBoxes() {
@@ -325,12 +476,51 @@
             ${d.status === "closed" ? `<span class="fg-preview-line">Pending</span>` : ""}
             <span>Status: ${d.status === "closed" ? "Pending" : esc(d.status)}</span>
             ${d.winner_name ? `<span class="fg-winner-line">Winner: ${esc(d.winner_name)} [${esc(d.winner_player_id)}] — Admin send reward</span>` : ""}
+            ${d.status === "open" && !d.winner_name ? `
+              <div class="fg-overview-entry-box">
+                <label>Points to use</label>
+                <input class="fg-input fg-overview-entry-points" data-draw-id="${esc(d.id)}" type="number" min="${esc(d.point_cost || 1)}" max="${esc(d.max_entries_per_player || 1)}" value="${esc(d.point_cost || 1)}">
+                <div class="fg-muted">Min ${esc(d.point_cost || 1)} • Max ${esc(d.max_entries_per_player || 1)}</div>
+                <button class="fg-primary fg-overview-enter-btn" data-draw-id="${esc(d.id)}" data-title="${esc(d.title)}">Enter This Event</button>
+              </div>
+            ` : ""}
           </div>
         `).join("")}
       `;
+      attachOverviewEntryHandlers();
     } catch (e) {
       // silent overview failure
     }
+  }
+
+  function attachOverviewEntryHandlers() {
+    document.querySelectorAll(".fg-overview-enter-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        if (!user) {
+          alert("Login from the Rules tab before entering events.");
+          activeTab = "rules";
+          render();
+          return;
+        }
+        const drawId = Number(btn.dataset.drawId || 0);
+        const title = btn.dataset.title || "this event";
+        const input = document.querySelector(`.fg-overview-entry-points[data-draw-id="${drawId}"]`);
+        const pointsSpent = Number(input?.value || 0);
+        if (!drawId) return alert("Could not read event ID.");
+        if (pointsSpent <= 0) return alert("Enter at least 1 point.");
+        try {
+          btn.disabled = true;
+          btn.textContent = "Entering...";
+          await api("/api/enter", { method: "POST", body: { draw_id: drawId, points_spent: pointsSpent } });
+          alert(`Entered ${title} with ${pointsSpent} point(s).`);
+          await refresh();
+        } catch (e) {
+          alert(e.message);
+          btn.disabled = false;
+          btn.textContent = "Enter This Event";
+        }
+      });
+    });
   }
 
   function renderEntry() {
@@ -362,7 +552,7 @@
         <p id="fg-selected-entry-status" class="fg-muted"></p>
         <label>Points to Use</label>
         <input class="fg-input" id="fg-entry-points" type="number" min="1" value="1">
-        <p class="fg-muted">Enter at least the draw cost. Extra points can add extra weight. Points are deducted when you submit the entry request.</p>
+        <p class="fg-muted">Enter at least the draw cost. Points are deducted when you submit.</p>
         <button class="fg-primary" id="fg-enter">Enter Draw</button>
       </div>
     `;
@@ -412,38 +602,33 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
       const p = res.points || {};
       $(".fg-body").innerHTML = `
         <div class="fg-hero">
-          <div class="fg-kicker">FREE POINTS</div>
           <h2>${esc(user.name)} [${esc(user.player_id)}]</h2>
           <div class="fg-big">${Number(p.balance || 0).toLocaleString()} pts</div>
-          <div class="fg-muted">Points are free credits. They cannot be bought, sold, traded, or exchanged.</div>
+          <div class="fg-muted">Points are credits for giveaway/event entries.</div>
         </div>
 
         <div class="fg-card">
-          <b>Item → Points Conversion</b>
-          <p class="fg-muted">Use this table to see how many points each accepted item is worth.</p>
+          <b>Item → Points</b>
           ${pointRowsHtml(res.conversion)}
         </div>
 
         <div class="fg-card">
-          <b>Daily Free Claim</b>
-          <p>${res.claimed_today ? "You already claimed today's free point." : "Claim 1 free point today."}</p>
-          <button class="fg-primary" id="fg-claim-daily" ${res.claimed_today ? "disabled" : ""}>${res.claimed_today ? "Claimed Today" : "Claim 1 Free Point"}</button>
-        </div>
-
-        <div class="fg-card">
           <b>Request Points</b>
-          <p class="fg-muted">Ask admin for free points. Admin approval is required before points are added.</p>
-          <label>Amount Requested</label>
-          <input class="fg-input" id="fg-request-points-amount" type="number" min="1" placeholder="Example: 10">
-          <label>Reason</label>
-          <input class="fg-input" id="fg-request-points-reason" placeholder="Example: event participation">
-          <button class="fg-primary" id="fg-request-points-submit">Send Point Request</button>
+          <label>Item Sent</label>
+          <select class="fg-input" id="fg-request-item">
+            ${conversionOptionsHtml(res.conversion)}
+          </select>
+          <label>How Many</label>
+          <input class="fg-input" id="fg-request-item-qty" type="number" min="1" value="1">
+          <div id="fg-request-preview" class="fg-mini-preview"></div>
+          <div class="fg-warning-box">You get 10 minutes after sending this request to send item(s) and verify.</div>
+          <button class="fg-primary" id="fg-request-points-submit">Send Request</button>
           <button class="fg-secondary" id="fg-load-my-point-requests">My Requests</button>
           <div id="fg-my-point-requests"></div>
         </div>
 
-        <div class="fg-card">
-          <b>Point History</b>
+        <details class="fg-card fg-details">
+          <summary>Point History</summary>
           <div id="fg-point-history">
             ${
               (res.ledger || []).length
@@ -451,7 +636,7 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
                 : `<div class="fg-muted">No point history yet.</div>`
             }
           </div>
-        </div>
+        </details>
       `;
 
       $("#fg-claim-daily")?.addEventListener("click", async () => {
@@ -465,6 +650,9 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
         }
       });
 
+      $("#fg-request-item")?.addEventListener("change", () => calcRequestPreview(res.conversion));
+      $("#fg-request-item-qty")?.addEventListener("input", () => calcRequestPreview(res.conversion));
+      calcRequestPreview(res.conversion);
       $("#fg-request-points-submit")?.addEventListener("click", submitPointRequest);
       $("#fg-load-my-point-requests")?.addEventListener("click", loadMyPointRequests);
     } catch (e) {
@@ -495,16 +683,17 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
 
   async function submitPointRequest() {
     try {
-      const amount = Number($("#fg-request-points-amount")?.value || 0);
-      const reason = $("#fg-request-points-reason")?.value.trim() || "";
-      if (!amount || amount <= 0) return alert("Enter a point amount.");
+      const itemName = $("#fg-request-item")?.value || "";
+      const quantity = Math.max(1, Number($("#fg-request-item-qty")?.value || 1));
+      if (!itemName) return alert("Pick an item.");
+      if (!quantity || quantity <= 0) return alert("Enter how many items.");
 
-      await api("/api/points/request", {
+      const res = await api("/api/points/request", {
         method: "POST",
-        body: { amount, reason }
+        body: { item_name: itemName, quantity }
       });
 
-      alert("Point request sent to admin for approval.");
+      alert(res.message || "Point request saved. You have 10 minutes to send the item and verify.");
       await loadMyPointRequests();
     } catch (e) {
       alert(e.message);
@@ -518,12 +707,29 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
       if (!box) return;
 
       box.innerHTML = (res.requests || []).length
-        ? res.requests.map(r => `<div class="fg-entry"><b>${esc(r.amount)} pts</b> ${statusPill(r.status)}<br><span>${esc(r.reason || "No reason")}</span></div>`).join("")
+        ? res.requests.map(requestLine).join("")
         : `<div class="fg-muted">No point requests yet.</div>`;
+
+      box.querySelectorAll("[data-verify-request]").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          try {
+            const id = Number(btn.dataset.verifyRequest || 0);
+            const out = await api("/api/points/verify", { method: "POST", body: { request_id: id } });
+            alert(out.approved ? "Verified. Points added." : (out.note || "No matching item send found yet."));
+            await loadMyPointRequests();
+            await refresh();
+            activeTab = "points";
+            render();
+          } catch (e) {
+            alert(e.message);
+          }
+        });
+      });
     } catch (e) {
       alert(e.message);
     }
   }
+
 
 
   function renderRules() {
@@ -533,27 +739,52 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
       <div class="fg-hero">
         <div class="fg-kicker">RULES & LOGIN</div>
         <h2>Fries91's Giveaway</h2>
-        <div class="fg-muted">Read the rules, terms, and API key use before logging in.</div>
+        <div class="fg-muted">Simple rules, winner info, and API login.</div>
       </div>
 
-      <div class="fg-card">
+      <div class="fg-card fg-rules-card">
         <b>Rules</b>
-        <p>This giveaway app uses free/admin-granted points for event entries. Entries use points from your balance. Event entries are final once submitted. Closing, clearing, or ending an event does not refund spent points.</p>
-        <p>Admins can create event draws, activate or disable them, review point requests, and send rewards to winners after the app chooses a winner.</p>
-        <p>Users are responsible for checking event cost, max entries, and prize details before entering.</p>
+        <ul class="fg-clean-list">
+          <li>Use your points to enter open draws.</li>
+          <li>Check the cost, prize, timer, and max entry limit before entering.</li>
+          <li>Entries are final once submitted. Closed, cleared, or ended draws do not refund spent points.</li>
+          <li>Do not spam requests, bypass limits, or use another player's API key.</li>
+          <li>Admin may reject requests, adjust points, or disable entries if abuse is found.</li>
+        </ul>
       </div>
 
-      <div class="fg-card">
+      <div class="fg-card fg-rules-card">
         <b>Terms of Service</b>
-        <p>By using this app, you understand this is a player-made Torn helper and not an official Torn feature. Rewards are handled manually by the admin. The app records your Torn name, Torn ID, point balance, entries, point requests, and winner history for this giveaway system.</p>
-        <p>Do not abuse the app, spam point requests, try to bypass limits, or use another player's API key. Admin may remove points, disable events, clear events, or reject point requests when needed.</p>
+        <ul class="fg-clean-list">
+          <li>This is a player-made Torn helper, not an official Torn feature.</li>
+          <li>Rewards are sent manually by Fries91/admin after winners are chosen.</li>
+          <li>The app records your Torn name, Torn ID, points, entries, requests, and winner history.</li>
+          <li>Using the app means you accept the draw rules shown in the app.</li>
+          <li>Admin decisions are final for abuse, errors, duplicate requests, or invalid entries.</li>
+        </ul>
       </div>
 
-      <div class="fg-card">
-        <b>API Key Use & Torn Rules</b>
-        <p>Your API key is used only to confirm your Torn identity, name, and player ID during login. The app does not need your password and should never ask for it.</p>
-        <p>The key is stored locally in your browser/PDA storage so you do not need to paste it every time. The input is masked when typed. Use a limited Torn API key where possible.</p>
-        <p>This app is designed to follow Torn's expectations by using the API for identity/login and app data only, not for automation that plays the game for you. You can remove the saved key from your browser/PDA storage by clearing site/script data.</p>
+      <div class="fg-card fg-rules-card">
+        <b>How Winners Are Chosen</b>
+        <ul class="fg-clean-list">
+          <li>Winners are picked with a fair random draw.</li>
+          <li>Each valid entrant gets one equal chance in that draw.</li>
+          <li>Using more points only pays the entry cost or event limit; it does not add extra winner weight.</li>
+          <li>When a draw ends, the backend randomly picks one valid entrant.</li>
+          <li>After a winner is picked, entries clear so the next draw starts fresh.</li>
+          <li>The monthly rolling jackpot restarts automatically and carries rollover into the next pot.</li>
+        </ul>
+      </div>
+
+      <div class="fg-card fg-rules-card">
+        <b>API Key Use</b>
+        <ul class="fg-clean-list">
+          <li>Your Torn API key is used to confirm your Torn name and player ID.</li>
+          <li>The app never needs your Torn password.</li>
+          <li>The input is masked, and pasted spaces/new lines are removed before login.</li>
+          <li>Use a Limited API key when possible.</li>
+          <li>You can clear your saved key/session with the button below.</li>
+        </ul>
       </div>
 
       <div class="fg-card private">
@@ -567,7 +798,10 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     `;
 
     $("#fg-rules-login")?.addEventListener("click", async () => {
-      const key = $("#fg-rules-api-key").value.trim();
+      const input = $("#fg-rules-api-key");
+      const key = String(input?.value || "").replace(/\s+/g, "").trim();
+      if (input) input.value = key;
+      if (!key) return alert("Paste your Torn API key first.");
       localStorage.setItem(KEY_KEY, key);
       try {
         const res = await api("/api/login", { method: "POST", body: { api_key: key } });
@@ -631,30 +865,25 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     const drawVal = state.draw_at ? new Date(state.draw_at * 1000).toISOString().slice(0, 16) : "";
     $(".fg-body").innerHTML = `
       <div class="fg-card private">
-        <b>Rolling Jackpot Controls</b>
+        <b>Rolling Jackpot Points</b>
         <label>Title</label>
         <input class="fg-input" id="fg-title" value="${esc(state.title || "Fries91's Giveaway")}">
-
-        <label>Prize Label</label>
-        <input class="fg-input" id="fg-prize-label" value="${esc(state.prize_label)}">
 
         <label>Starting Jackpot</label>
         <input class="fg-input" id="fg-base-payout" type="number" value="${esc(state.base_payout)}">
 
-        <label>Entry Item Name</label>
-        <input class="fg-input" id="fg-entry-item-name" value="${esc(state.entry_item_name)}">
+        <label>Points To Enter</label>
+        <input class="fg-input" id="fg-rolling-point-cost" type="number" min="1" value="${esc(state.point_cost || 1)}">
 
-        <label>Entry Item Value</label>
-        <input class="fg-input" id="fg-entry-item-value" type="number" value="${esc(state.entry_item_value)}">
-
-        <label>Draw Time</label>
-        <input class="fg-input" id="fg-draw-at" type="datetime-local" value="${esc(drawVal)}">
+        <label>Each Point Is Worth</label>
+        <input class="fg-input" id="fg-entry-item-value" type="number" min="1" value="${esc(state.entry_item_value || 0)}">
 
         <div class="fg-split">
-          <div>Approved Entries: <b>${state.approved_entry_count}</b></div>
-          <div>Pending Entries: <b>${state.pending_entry_count}</b></div>
+          <div>Status: <b>${esc(state.status)}</b></div>
+          <div>Timer Ends: <b>${esc(fmtTime(state.end_at || state.draw_at))}</b></div>
+          <div>Approved Points: <b>${state.approved_points_total || 0}</b></div>
           <div>Starting Jackpot: <b>${money(state.base_payout)}</b></div>
-          <div>Approved Points × Value: <b>${state.approved_points_total || 0} × ${money(state.entry_item_value)} = ${money(state.entry_growth_total)}</b></div>
+          <div>Points × Value: <b>${state.approved_points_total || 0} × ${money(state.entry_item_value)} = ${money(state.entry_growth_total)}</b></div>
           <div>Rolling Jackpot: <b>${money(state.total_pool)}</b></div>
           <div>Player 60%: <b>${money(state.player_cut)}</b></div>
           <div>Rollover 20%: <b>${money(state.rollover_cut)}</b></div>
@@ -663,10 +892,9 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
         </div>
 
         <button class="fg-primary" id="fg-save">Save Settings</button>
-        <button class="fg-secondary" id="fg-open">Open Giveaway</button>
+        <button class="fg-secondary" id="fg-open">Open Giveaway / Start 30 Day Timer</button>
         <button class="fg-secondary" id="fg-close-giveaway">Close Giveaway</button>
-        <button class="fg-warn" id="fg-draw">Draw Winner</button>
-        <button class="fg-secondary" id="fg-roll">Start Next Roll From Rollover</button>
+        <button class="fg-warn" id="fg-draw">Draw Winner Now</button>
       </div>
 
       <div class="fg-card private">
@@ -760,7 +988,6 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     `;
 
     $("#fg-save").addEventListener("click", saveAdmin);
-    $("#fg-roll").addEventListener("click", rollAdmin);
     $("#fg-draw").addEventListener("click", drawAdmin);
     $("#fg-load-admin-stats")?.addEventListener("click", loadAdminStats);
     $("#fg-save-point-conversions")?.addEventListener("click", adminSavePointConversions);
@@ -831,16 +1058,12 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
 
 
   function adminPayload() {
-    const dt = $("#fg-draw-at").value;
-    const draw_at = dt ? Math.floor(new Date(dt).getTime() / 1000) : null;
     return {
       title: $("#fg-title").value.trim(),
-      prize_label: $("#fg-prize-label").value.trim(),
       base_payout: Number($("#fg-base-payout").value || 0),
-      entry_item_name: $("#fg-entry-item-name").value.trim(),
+      point_cost: Number($("#fg-rolling-point-cost").value || 1),
       entry_item_value: Number($("#fg-entry-item-value").value || 0),
-      rollover_pool: 0,
-      draw_at
+      rollover_pool: 0
     };
   }
 
@@ -1353,18 +1576,41 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
 
 
   GM_addStyle(`
+    #fries-giveaway-page-header {
+      position: relative !important;
+      display: block !important;
+      width: 100% !important;
+      box-sizing: border-box !important;
+      z-index: 20 !important;
+      margin: 6px 0 8px 0 !important;
+      padding: 0 6px !important;
+      clear: both !important;
+      font-family: Arial, sans-serif !important;
+    }
     #fries-giveaway-topbar {
-      position: fixed; top: 0; left: 0; right: 0; z-index: 999998;
-      min-height: 34px; width: 100%; border: 0; border-bottom: 1px solid rgba(255,255,255,.16);
-      background: linear-gradient(90deg,#18111f,#321d50,#18111f);
-      color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center;
-      gap: 10px; padding: 6px 12px; box-shadow: 0 5px 18px rgba(0,0,0,.35);
-      font-family: Arial, sans-serif; overflow: hidden;
+      position: relative !important;
+      inset: auto !important;
+      width: 100% !important;
+      min-height: 38px !important;
+      border: 1px solid rgba(255,255,255,.16) !important;
+      border-radius: 10px !important;
+      background: linear-gradient(90deg,#18111f,#321d50,#18111f) !important;
+      color: #fff !important;
+      cursor: pointer !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      gap: 9px !important;
+      padding: 7px 10px !important;
+      box-shadow: 0 4px 12px rgba(0,0,0,.28) !important;
+      overflow: hidden !important;
+      box-sizing: border-box !important;
+      font-family: Arial, sans-serif !important;
     }
     .fg-top-icon { width: 24px; height: 24px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; background: radial-gradient(circle at 35% 20%,#ffeaa5,#b77414 60%,#6b3a08); color: #1b1205; font-size: 15px; flex: 0 0 auto; }
     .fg-top-text { font-weight: 900; text-transform: uppercase; letter-spacing: .08em; font-size: 13px; color: #ffe9a8; text-shadow: 0 1px 1px rgba(0,0,0,.7); flex: 0 0 auto; }
     .fg-top-marquee { color: #d9d1f5; font-size: 12px; white-space: nowrap; opacity: .95; overflow: hidden; text-overflow: ellipsis; }
-    #fries-giveaway-panel { position: fixed !important; left: 50% !important; right: auto !important; top: 112px !important; transform: translateX(-50%) !important; z-index: 999999; width: min(620px, calc(100vw - 24px)); max-height: calc(100vh - 132px); display: none; overflow: hidden; border-radius: 18px; background: #11131a; color: #f4f2ff; border: 1px solid rgba(255,255,255,.16); box-shadow: 0 18px 60px rgba(0,0,0,.55); font-family: Arial, sans-serif; }
+    #fries-giveaway-panel { position: fixed; right: 12px; top: 70px; z-index: 999999; width: min(430px, calc(100vw - 24px)); max-height: calc(100vh - 58px); display: none; overflow: hidden; border-radius: 18px; background: #11131a; color: #f4f2ff; border: 1px solid rgba(255,255,255,.16); box-shadow: 0 18px 60px rgba(0,0,0,.55); font-family: Arial, sans-serif; }
     #fries-giveaway-panel.open { display: block; }
     .fg-head { display:flex; align-items:center; justify-content:space-between; padding: 14px; background: linear-gradient(135deg,#1b102b,#301a50); }
     .fg-title { font-weight: 800; font-size: 18px; }
@@ -1374,9 +1620,13 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     .fg-tabs button { flex:1; padding: 9px 8px; border-radius: 10px; border:1px solid rgba(255,255,255,.12); background:#202333; color:#e9e3ff; cursor:pointer; }
     .fg-tabs button.active { background:#6b38b6; border-color:#9c6cff; }
     .fg-body { padding: 12px; overflow:auto; max-height: calc(100vh - 180px); }
-    .fg-hero { padding:18px; border-radius:18px; background: radial-gradient(circle at top left,#7143bd,#21152f 55%); border:1px solid rgba(255,255,255,.16); margin-bottom: 10px; }
-    .fg-kicker { font-size:11px; letter-spacing:.1em; color:#d7c6ff; }
-    .fg-hero h2 { margin: 8px 0; font-size: 22px; }
+    .fg-hero { padding:32px 18px 18px; border-radius:18px; background: radial-gradient(circle at top left,#7143bd,#21152f 55%); border:1px solid rgba(255,255,255,.16); margin-bottom: 10px; }
+    .fg-kicker { font-size:11px; letter-spacing:.1em; display:block; margin-bottom:16px; line-height:1.25; color:#d7c6ff; }
+    .fg-hero h2 { margin: 6px 0 12px; font-size: 22px; line-height:1.22; }
+
+    .fg-rules-card { padding:14px 14px 12px; }
+    .fg-clean-list { margin:8px 0 0; padding-left:18px; color:#f4f6ff; font-size:13px; line-height:1.35; }
+    .fg-clean-list li { margin:5px 0; }
     .fg-big { font-size: 32px; font-weight: 900; }
     .fg-subline { margin-top:6px; font-size:16px; font-weight:800; color:#f4f2ff; }
     .fg-subline.small { font-size:13px; color:#c8c0dc; }
@@ -1415,27 +1665,62 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     .fg-status { display:inline-block; padding:4px 8px; border-radius:999px; font-size:11px; font-weight:900; margin:3px 0; }
     .fg-status-approved { background:#154f2e; color:#9affc3; }
     .fg-status-pending { background:#5a4315; color:#ffe49a; }
+    .fg-status-pending_payment { background:#5a4315; color:#ffe49a; }
+    .fg-status-expired { background:#3b1e1e; color:#ffb9b9; }
     .fg-status-rejected { background:#5a1717; color:#ff9a9a; }
 
-    @media (min-width: 521px) and (max-width: 900px) {
-      #fries-giveaway-panel { top: 98px !important; width: min(560px, calc(100vw - 20px)) !important; max-height: calc(100vh - 116px); }
+    .fg-tabs [data-tab="entry"] { display:none !important; }
+    .fg-overview-entry-box { margin-top:10px; padding:10px; border-radius:12px; border:1px solid rgba(255,255,255,.12); background:rgba(0,0,0,.22); }
+    .fg-overview-entry-box label { display:block; margin-bottom:6px; font-weight:800; color:#fff; }
+
+    @media (min-width: 721px) {
+      #fries-giveaway-panel {
+        left: 50% !important;
+        right: auto !important;
+        top: 112px !important;
+        transform: translateX(-50%) !important;
+        width: min(620px, calc(100vw - 24px)) !important;
+        max-height: calc(100vh - 132px) !important;
+      }
+      .fg-body { max-height: calc(100vh - 220px) !important; }
     }
+    @media (max-width: 720px) {
+      #fries-giveaway-panel {
+        left: 8px !important;
+        right: 8px !important;
+        top: 86px !important;
+        transform: none !important;
+        width: auto !important;
+        max-height: calc(100vh - 104px) !important;
+      }
+    }
+
     @media (max-width: 520px) {
       #fries-giveaway-topbar { min-height: 36px; padding: 6px 8px; gap: 7px; }
       .fg-top-text { font-size: 12px; }
       .fg-top-marquee { font-size: 11px; max-width: 45vw; }
-      #fries-giveaway-panel { left: 8px !important; right: 8px !important; top: 86px !important; transform: none !important; width: auto !important; max-height: calc(100vh - 104px); }
+      #fries-giveaway-panel { right: 8px !important; left: 8px !important; width: auto !important; top: 86px !important; max-height: calc(100vh - 104px) !important; transform: none !important; }
       .fg-grid { grid-template-columns:1fr; }
     }
 
     .fg-point-admin-grid { display: grid; gap: 8px; margin: 8px 0; }
     .fg-point-admin-row { display: grid; grid-template-columns: 1fr 150px; gap: 8px; }
     .fg-mini-preview { margin-top: 10px; padding: 10px; border-radius: 14px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.12); }
-    .fg-point-table { width: 100%; border-collapse: collapse; margin-top: 8px; overflow: hidden; border-radius: 12px; }
-    .fg-point-table th, .fg-point-table td { text-align: left; padding: 8px; border-bottom: 1px solid rgba(255,255,255,.10); }
-    .fg-point-table th { font-size: 11px; text-transform: uppercase; color: #d8cdf1; background: rgba(255,255,255,.06); }
-    @media (max-width: 560px) { .fg-point-admin-row { grid-template-columns: 1fr; } .fg-point-table th, .fg-point-table td { padding: 7px 5px; font-size: 12px; } }
+    .fg-point-table { width: 100%; border-collapse: separate; border-spacing: 0; margin-top: 8px; overflow: hidden; border-radius: 12px; border: 1px solid rgba(255,255,255,.18); background: rgba(5,5,12,.82); }
+    .fg-point-table th, .fg-point-table td { text-align: left; padding: 9px 8px; border-bottom: 1px solid rgba(255,255,255,.12); color: #f7f1ff !important; }
+    .fg-point-table td:nth-child(2), .fg-point-table td:nth-child(3) { color: #ffffff !important; font-weight: 800; }
+    .fg-point-table th { font-size: 11px; text-transform: uppercase; color: #ffffff !important; background: rgba(107,56,182,.42); letter-spacing: .03em; }
+    .fg-point-table tr:last-child td { border-bottom: 0; }
+    .fg-calc-line { display:flex; justify-content:space-between; gap:10px; padding:7px 0; border-bottom:1px solid rgba(255,255,255,.10); color:#fff; }
+    .fg-calc-line:last-child { border-bottom:0; }
+    .fg-calc-line span { font-weight:900; color:#ffffff; }
+    .fg-warning-box, .fg-warnline { margin-top:8px; padding:8px; border-radius:10px; background:rgba(255,183,77,.14); border:1px solid rgba(255,183,77,.35); color:#ffe6b0 !important; font-weight:800; }
+    @media (max-width: 560px) {
+      #fries-giveaway-page-header { padding: 0 4px !important; margin: 5px 0 7px 0 !important; } .fg-point-admin-row { grid-template-columns: 1fr; } .fg-point-table th, .fg-point-table td { padding: 8px 6px; font-size: 12px; } }
   `);
 
   ensureButton();
+  setTimeout(ensureButton, 300);
+  setTimeout(ensureButton, 900);
+  setTimeout(ensureButton, 1800);
 })();
