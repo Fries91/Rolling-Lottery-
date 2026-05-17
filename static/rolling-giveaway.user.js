@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.55
+// @version      1.0.56
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Points, Rules, Winners, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -265,9 +265,91 @@
   function ensureButton() {
     const mounted = mountGiveawayPageHeader();
     if (mounted) {
+      const header = document.getElementById("fries-giveaway-page-header");
+      makeLauncherDraggable(header);
       updateTopbarJackpot();
       silentTopbarRefresh();
     }
+  }
+
+  function makeLauncherDraggable(header) {
+    if (!header || header.dataset.launcherDragReady === "1") return;
+    header.dataset.launcherDragReady = "1";
+
+    const btn = header.querySelector("#fries-giveaway-topbar");
+    if (!btn) return;
+
+    const saved = JSON.parse(localStorage.getItem("fries91_giveaway_launcher_pos_v1") || "null");
+    if (window.innerWidth > 720 && saved && Number.isFinite(saved.left) && Number.isFinite(saved.top)) {
+      header.classList.add("fg-floating-launcher");
+      header.style.setProperty("left", Math.max(6, Math.min(saved.left, window.innerWidth - 120)) + "px", "important");
+      header.style.setProperty("top", Math.max(6, Math.min(saved.top, window.innerHeight - 60)) + "px", "important");
+      header.style.setProperty("transform", "none", "important");
+    }
+
+    let dragging = false;
+    let moved = false;
+    let sx = 0, sy = 0, sl = 0, st = 0;
+    const getPoint = (ev) => ev.touches && ev.touches[0] ? ev.touches[0] : ev;
+
+    btn.addEventListener("click", (ev) => {
+      if (header.dataset.suppressClick === "1") {
+        header.dataset.suppressClick = "0";
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+      }
+    }, true);
+
+    const down = (ev) => {
+      if (window.innerWidth <= 720) return;
+      if (ev.target && ev.target.closest && ev.target.closest("input,select,textarea")) return;
+      const pt = getPoint(ev);
+      const rect = header.getBoundingClientRect();
+      dragging = true;
+      moved = false;
+      sx = pt.clientX;
+      sy = pt.clientY;
+      sl = rect.left;
+      st = rect.top;
+      header.classList.add("fg-launcher-dragging", "fg-floating-launcher");
+      header.style.setProperty("left", rect.left + "px", "important");
+      header.style.setProperty("top", rect.top + "px", "important");
+      header.style.setProperty("transform", "none", "important");
+    };
+
+    const move = (ev) => {
+      if (!dragging) return;
+      const pt = getPoint(ev);
+      const dx = pt.clientX - sx;
+      const dy = pt.clientY - sy;
+      if (Math.abs(dx) > 4 || Math.abs(dy) > 4) moved = true;
+      const rect = header.getBoundingClientRect();
+      const left = Math.max(6, Math.min(sl + dx, window.innerWidth - rect.width - 6));
+      const top = Math.max(6, Math.min(st + dy, window.innerHeight - rect.height - 6));
+      header.style.setProperty("left", left + "px", "important");
+      header.style.setProperty("top", top + "px", "important");
+      header.style.setProperty("transform", "none", "important");
+      if (moved) ev.preventDefault();
+    };
+
+    const up = () => {
+      if (!dragging) return;
+      dragging = false;
+      header.classList.remove("fg-launcher-dragging");
+      const rect = header.getBoundingClientRect();
+      localStorage.setItem("fries91_giveaway_launcher_pos_v1", JSON.stringify({ left: Math.round(rect.left), top: Math.round(rect.top) }));
+      if (moved) {
+        header.dataset.suppressClick = "1";
+        setTimeout(() => { header.dataset.suppressClick = "0"; }, 250);
+      }
+    };
+
+    btn.addEventListener("mousedown", down);
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+    btn.addEventListener("touchstart", down, { passive: true });
+    document.addEventListener("touchmove", move, { passive: false });
+    document.addEventListener("touchend", up);
   }
 
 
@@ -1752,8 +1834,8 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
         left: 50% !important;
         right: auto !important;
         transform: translateX(-50%) !important;
-        width: min(700px, calc(100vw - 430px)) !important;
-        min-width: 520px !important;
+        width: min(620px, calc(100vw - 430px)) !important;
+        min-width: 460px !important;
         margin: 0 !important;
         padding: 0 !important;
         z-index: 99990 !important;
@@ -1761,6 +1843,13 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
       }
       #fries-giveaway-topbar {
         pointer-events: auto !important;
+        cursor: grab !important;
+      }
+      #fries-giveaway-page-header.fg-launcher-dragging #fries-giveaway-topbar {
+        cursor: grabbing !important;
+      }
+      #fries-giveaway-page-header.fg-floating-launcher {
+        right: auto !important;
       }
       #fries-giveaway-panel {
         left: 50% !important;
