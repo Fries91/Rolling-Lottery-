@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.52
+// @version      1.0.53
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Points, Rules, Winners, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -1674,6 +1674,23 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     .fg-overview-entry-box label { display:block; margin-bottom:6px; font-weight:800; color:#fff; }
 
     @media (min-width: 721px) {
+      /* PC / Firefox: lock launcher under Torn's ticker instead of letting page containers/sidebar move it */
+      #fries-giveaway-page-header {
+        position: fixed !important;
+        top: 174px !important;
+        left: 50% !important;
+        right: auto !important;
+        transform: translateX(-50%) !important;
+        width: min(700px, calc(100vw - 430px)) !important;
+        min-width: 520px !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        z-index: 99990 !important;
+        pointer-events: none !important;
+      }
+      #fries-giveaway-topbar {
+        pointer-events: auto !important;
+      }
       #fries-giveaway-panel {
         left: 50% !important;
         right: auto !important;
