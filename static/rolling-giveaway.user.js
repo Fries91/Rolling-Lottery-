@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.58
+// @version      1.0.60
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Points, Rules, Winners, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -990,9 +990,16 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
         <button class="fg-secondary" id="fg-rules-clear-key">Clear Saved Key</button>
       </div>
 
+      ${user ? `
+      <div class="fg-card fg-rules-card" id="fg-referral-box">
+        <b>Referral Code</b>
+        <p class="fg-muted">Loading referral info...</p>
+      </div>` : ``}
+
       <div class="fg-card fg-rules-card">
         <b>Limited API Key Recommended</b>
         <p class="fg-muted">Use a Limited Torn API key for login. The app only needs your Torn name and player ID to confirm who you are.</p>
+        <p class="fg-muted">First-time logins get a one-time 2 point welcome bonus. Referral codes are for new users only.</p>
       </div>
     `;
 
@@ -1005,6 +1012,9 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
       try {
         const res = await api("/api/login", { method: "POST", body: { api_key: key } });
         localStorage.setItem(LS_KEY, res.token);
+        if (res.welcome_bonus_awarded) {
+          alert(`Welcome bonus added: ${Number(res.welcome_bonus_points || 2).toLocaleString()} points.`);
+        }
         await refresh();
         activeTab = "overview";
         render();
@@ -1020,6 +1030,63 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
       alert("Saved API key/session cleared from this browser.");
       render();
     });
+
+    if (user) loadReferralBox();
+  }
+
+
+  async function loadReferralBox() {
+    const box = $("#fg-referral-box");
+    if (!box) return;
+    try {
+      const res = await api("/api/referral");
+      const r = res.referral || {};
+      const referredBy = r.referred_by
+        ? `<div class="fg-muted">You used code <b>${esc(r.referred_by.code)}</b>${r.referred_by.referrer_name ? ` from ${esc(r.referred_by.referrer_name)}` : ""}.</div>`
+        : `<label>Use Referral Code</label>
+           <div class="fg-inline-row">
+             <input class="fg-input" id="fg-referral-use-code" placeholder="Paste referral code">
+             <button class="fg-secondary" id="fg-referral-apply">Apply</button>
+           </div>`;
+
+      box.innerHTML = `
+        <b>Referral Code</b>
+        <p class="fg-muted">Send your code to new users. When a referred new user receives 5 points from item requests, you get a one-time 10 point bonus for that user.</p>
+        <label>Your Code</label>
+        <div class="fg-inline-row">
+          <input class="fg-input" id="fg-referral-own-code" readonly value="${esc(r.code || "")}">
+          <button class="fg-secondary" id="fg-referral-copy">Copy</button>
+        </div>
+        ${referredBy}
+        <div class="fg-mini-preview">
+          Earned: ${Number(r.earned_points || 0).toLocaleString()} pts • Pending referrals: ${Number(r.pending_count || 0).toLocaleString()}
+        </div>
+      `;
+
+      $("#fg-referral-copy")?.addEventListener("click", async () => {
+        const code = $("#fg-referral-own-code")?.value || "";
+        try {
+          await navigator.clipboard.writeText(code);
+          alert("Referral code copied.");
+        } catch (e) {
+          prompt("Copy your referral code:", code);
+        }
+      });
+
+      $("#fg-referral-apply")?.addEventListener("click", async () => {
+        try {
+          const code = String($("#fg-referral-use-code")?.value || "").replace(/\s+/g, "").toUpperCase();
+          if (!code) return alert("Paste a referral code first.");
+          const out = await api("/api/referral/use", { method: "POST", body: { code } });
+          alert(out.message || "Referral code saved.");
+          await loadReferralBox();
+        } catch (e) {
+          alert(e.message);
+        }
+      });
+    } catch (e) {
+      box.innerHTML = `<b>Referral Code</b><p class="fg-muted">Could not load referral info: ${esc(e.message)}</p>`;
+    }
   }
 
 
@@ -1872,6 +1939,11 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     .fg-status-approved { background:#154f2e; color:#9affc3; }
     .fg-status-pending { background:#5a4315; color:#ffe49a; }
     .fg-status-pending_payment { background:#5a4315; color:#ffe49a; }
+
+    .fg-inline-row { display:flex; gap:8px; align-items:center; }
+    .fg-inline-row .fg-input { flex:1; margin:0 !important; }
+    .fg-inline-row .fg-secondary { width:auto !important; white-space:nowrap; margin:0 !important; }
+    @media (max-width: 520px) { .fg-inline-row { flex-direction:column; align-items:stretch; } .fg-inline-row .fg-secondary { width:100% !important; } }
     .fg-status-expired { background:#3b1e1e; color:#ffb9b9; }
     .fg-status-rejected { background:#5a1717; color:#ff9a9a; }
 
