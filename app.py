@@ -338,6 +338,29 @@ def point_conversion_payload(conn):
     }
 
 
+# Referral table setup must be defined before init_db() runs on Render.
+def ensure_referrals(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS referral_codes (
+            player_id INTEGER PRIMARY KEY,
+            code TEXT NOT NULL UNIQUE,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS referral_links (
+            referred_player_id INTEGER PRIMARY KEY,
+            referrer_player_id INTEGER NOT NULL,
+            code TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            rewarded_at INTEGER,
+            reward_points INTEGER NOT NULL DEFAULT 10
+        )
+    """)
+    add_col(conn, "referral_links", "rewarded_at", "rewarded_at INTEGER")
+    add_col(conn, "referral_links", "reward_points", "reward_points INTEGER NOT NULL DEFAULT 10")
+
+
 def init_db():
     with db() as conn:
         ensure_users(conn)
