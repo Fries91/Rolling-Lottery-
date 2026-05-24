@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.61
-// @description  Free-entry rolling giveaway overlay for Torn. Overview, Points, Rules, Winners, Admin tabs.
+// @version      1.0.62
+// @description  Free-entry rolling giveaway overlay for Torn. Overview, Points, Rules, Settings, Winners, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @match        https://*.torn.com/*
@@ -475,6 +475,7 @@
         <button data-tab="overview">Overview</button>
         <button data-tab="points">Points</button>
         <button data-tab="rules">Rules</button>
+        <button data-tab="settings">Settings</button>
         <button data-tab="winners">Winners</button>
         <button data-tab="admin" class="fg-admin-tab">Admin</button>
       </div>
@@ -564,6 +565,7 @@
     if (activeTab === "overview") return renderOverview();
     if (activeTab === "points") return renderPoints();
     if (activeTab === "rules") return renderRules();
+    if (activeTab === "settings") return renderSettings();
     if (activeTab === "winners") return renderWinners();
     if (activeTab === "admin" && isAdmin()) return renderAdmin();
     return renderOverview();
@@ -1091,6 +1093,47 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
     } catch (e) {
       box.innerHTML = `<b>Referral Code</b><p class="fg-muted">Could not load referral info: ${esc(e.message)}</p>`;
     }
+  }
+
+
+  function renderSettings() {
+    setTabClasses();
+    $(".fg-body").innerHTML = `
+      <div class="fg-hero">
+        <div class="fg-kicker">SETTINGS</div>
+        <h2>Key Use & Privacy</h2>
+        <div class="fg-muted">Clear info for users before they log in.</div>
+      </div>
+
+      <div class="fg-card fg-rules-card">
+        <b>API Key Use, Storage & Privacy</b>
+        <ul class="fg-clean-list">
+          <li><b>Recommended:</b> use a Limited Torn API key.</li>
+          <li>A Limited key is preferred because this app only needs basic profile identity for login: your Torn name and player ID.</li>
+          <li><b>Minimal keys</b> may fail if Torn does not allow profile identity access.</li>
+          <li><b>Restricted/custom keys</b> may work only if they include profile identity access.</li>
+          <li><b>Full keys are not needed</b> and give more access than this giveaway app requires.</li>
+          <li>The app never needs your Torn password.</li>
+          <li>Normal user API keys are not stored on the backend. After login, the backend uses a session token.</li>
+          <li>Your key may be saved locally only on your own browser/PDA so you do not need to paste it every time.</li>
+          <li>You can remove the saved local key with the Clear Saved Key button in the Rules/Login tab.</li>
+          <li>Admin can see giveaway records needed to run the app, such as Torn name, Torn ID, points, entries, requests, referrals, and winner history.</li>
+          <li>Other users cannot see your API key or private account info through this app.</li>
+          <li>The admin/backend key is used only to verify item sends to Fries91 for point requests.</li>
+        </ul>
+      </div>
+
+      <div class="fg-card fg-rules-card">
+        <b>Why Limited Instead Of Other Keys?</b>
+        <ul class="fg-clean-list">
+          <li>Limited gives enough access for the identity check this app needs.</li>
+          <li>Minimal can be too restricted and may block login.</li>
+          <li>Custom/restricted keys depend on what permissions the user selected.</li>
+          <li>Full gives extra access that is unnecessary for points, entries, referrals, and giveaways.</li>
+          <li>Using the lowest working access level protects users and keeps the app more trustworthy.</li>
+        </ul>
+      </div>
+    `;
   }
 
 
