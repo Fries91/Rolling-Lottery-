@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fries91's Giveaway
 // @namespace    Fries91.Torn.RollingGiveaway
-// @version      1.0.60
+// @version      1.0.61
 // @description  Free-entry rolling giveaway overlay for Torn. Overview, Points, Rules, Winners, Admin tabs.
 // @author       Fries91
 // @match        https://www.torn.com/*
@@ -971,13 +971,16 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
       </div>
 
       <div class="fg-card fg-rules-card">
-        <b>API Key Use</b>
+        <b>API Key Use, Storage & Privacy</b>
         <ul class="fg-clean-list">
-          <li>Your Torn API key is used to confirm your Torn name and player ID.</li>
-          <li>The app never needs your Torn password.</li>
+          <li>Recommended key: Limited Torn API key. Restricted/custom keys may work only if they allow profile identity access.</li>
+          <li>Your key is used to confirm your Torn name and player ID. The app never needs your Torn password.</li>
           <li>The input is masked, and pasted spaces/new lines are removed before login.</li>
-          <li>Use a Limited API key when possible.</li>
-          <li>You can clear your saved key/session with the button below.</li>
+          <li>Your saved key is kept in your own browser/PDA local storage so you do not need to paste it every time.</li>
+          <li>The backend stores your Torn ID, name, points, entries, requests, referrals, and winner history for the giveaway system.</li>
+          <li>Your API key is not shown to other users. Admin/backend operator access is limited to app data needed to run points, entries, verification, and support.</li>
+          <li>The app backend runs on Render. Server/database access is controlled by the app owner/admin, so only use this app if you trust the operator.</li>
+          <li>You can clear your saved key/session with the button below or by clearing PDA/browser script storage.</li>
         </ul>
       </div>
 
@@ -998,7 +1001,8 @@ $("#fg-go-rules-login")?.addEventListener("click", () => {
 
       <div class="fg-card fg-rules-card">
         <b>Limited API Key Recommended</b>
-        <p class="fg-muted">Use a Limited Torn API key for login. The app only needs your Torn name and player ID to confirm who you are.</p>
+        <p class="fg-muted">Use a Limited key when possible. Minimal may not work, and restricted/custom keys must allow profile identity access.</p>
+        <p class="fg-muted">Only your own browser/PDA should save your user key. Do not share your key or password with anyone.</p>
         <p class="fg-muted">First-time logins get a one-time 2 point welcome bonus. Referral codes are for new users only.</p>
       </div>
     `;
